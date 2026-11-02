@@ -193,6 +193,14 @@ fn main() {
     // made in the release, by the foot left on the ground pushing sideways;
     // releases under 25 ms fell 21/115, longer ones 50/93.
     let release_first_off = flag("RELEASE_FIRST_OFF", false);
+    // AIR_ABORT_T (s, 0 = off): after the release has scheduled flight, if
+    // no tick has had both feet unloaded within this long and a foot is
+    // loaded, it was not a flight: return to stance and absorb (JUMP_ABORT
+    // for the RELEASE_FIRST_OFF path). Measured 2026-11-02: two JUMP_V 1.0
+    // members released on one foot, reloaded both 4 ms later and collapsed
+    // under the flight tasks; release -> both feet off is <= 42 ms in every
+    // member that flew.
+    let air_abort_t = env_f64("AIR_ABORT_T", 0.0).max(0.0);
     let wbcw_contact = env_f64("WBCW_CONTACT", 0.1);
     let wbcw_contact_rest = std::env::var("WBCW_CONTACT_REST").ok().and_then(|s| s.parse::<f64>().ok());
     let wbcw_contact_rest_after = env_f64("WBCW_CONTACT_REST_AFTER", 0.5);
@@ -280,6 +288,24 @@ fn main() {
         )
     };
     let mut land: Option<(f64, na::Vector3<f64>, na::Vector3<f64>)> = None;
+    // LAND_REF_FOLLOW=1: the landing reference's horizontal part moves with
+    // the feet -- shifted by how far the two sole centres' midpoint has
+    // moved since the landing began. Measured 2026-11-02 (DIAG_LAND, the
+    // JUMP_V 2.0 true falls): the trunk pitches forward to 0.54 rad, the CoP
+    // sits on the toe edge, the feet slide 7 cm forward 1.0-1.4 s after
+    // touchdown, and the reference left in the world is then on the heel
+    // edge: the CoM task pulls the CoM back over it and the robot falls
+    // backward ~2.5 s after landing. Off = bit-identical.
+    // LAND_REF_FOLLOW=2: follow only the feet in contact -- the reference
+    // moves by the mean displacement, tick to tick, of the loaded soles
+    // (none loaded: no move). Measured 2026-11-02: with =1 the JUMP_V 1.0
+    // members that land on one foot in a row of short hops lost 6/96: the
+    // unloaded foot wandered 7-8 cm back on the floor and took the
+    // reference with it.
+    let land_ref_follow = env_f64("LAND_REF_FOLLOW", 0.0) as u32;
+    let mut land_sole0: Option<(f64, na::Vector2<f64>)> = None;
+    // (landing start, each sole's last position, accumulated shift)
+    let mut land_follow: Option<(f64, [na::Vector2<f64>; 2], na::Vector2<f64>)> = None;
     let mut min_com_z_after = f64::INFINITY;
     let (mut peak_grf_after, mut peak_tau_after, mut td_vz) = (0.0_f64, 0.0_f64, 0.0_f64);
     let flight_trunk = flag("FLIGHT_TRUNK", true);
@@ -432,6 +458,17 @@ fn main() {
                     in_contact[k] = measured.cop[k][2] > f_on;
                     flip_count[k] = 0;
                 }
+            } else if air_abort_t > 0.0 && !left_ground && loaded && push_end.is_some_and(|te| t - te >= air_abort_t) {
+                // Never both feet off: not a flight. Back to stance without
+                // counting a flight span, and absorb from here (as JUMP_ABORT).
+                air_sched = false;
+                flight_t0 = None;
+                for k in 0..2 {
+                    in_contact[k] = measured.cop[k][2] > f_on;
+                    flip_count[k] = 0;
+                }
+                land = Some((t, com, com_vel));
+                println!("  [air-abort] t={t:.3} no instant with both feet off {air_abort_t:.3} s after the release: no flight, absorb in stance");
             } else {
                 for k in 0..2 {
                     if in_contact[k] {
@@ -721,6 +758,35 @@ fn main() {
                         c.z = p;
                         cd.z = vv;
                         cdd.z = aa;
+                    }
+                    let sole = |k: usize| {
+                        let o = misarta::se3::translation(&data.oMi[feet[k]]);
+                        let r = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
+                        (o + r * na::Vector3::new(prof.sole_centre_x, 0.0, 0.0)).xy()
+                    };
+                    if land_ref_follow == 2 {
+                        let now = [sole(0), sole(1)];
+                        if land_follow.is_none_or(|(tt, _, _)| tt != t0) {
+                            land_follow = Some((t0, now, na::Vector2::zeros()));
+                        }
+                        if let Some((_, last, shift)) = land_follow.as_mut() {
+                            let on: Vec<usize> = (0..2).filter(|&k| in_contact[k]).collect();
+                            if !on.is_empty() {
+                                let d: na::Vector2<f64> = on.iter().map(|&k| now[k] - last[k]).sum();
+                                *shift += d / on.len() as f64;
+                            }
+                            *last = now;
+                            c.x += shift.x;
+                            c.y += shift.y;
+                        }
+                    } else if land_ref_follow == 1 {
+                        let mid = 0.5 * (sole(0) + sole(1));
+                        if land_sole0.is_none_or(|(tt, _)| tt != t0) {
+                            land_sole0 = Some((t0, mid));
+                        }
+                        let m0 = land_sole0.map_or(mid, |(_, m)| m);
+                        c.x += mid.x - m0.x;
+                        c.y += mid.y - m0.y;
                     }
                     (c, cd, cdd)
                 }

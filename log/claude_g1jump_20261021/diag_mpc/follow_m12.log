@@ -1,0 +1,275 @@
+robot: g1_23dof
+collision: dropped 21 mesh geoms, kept 12 primitives (visual meshes untouched)
+rig check: freejoint=true  ground_plane=true
+centroidal model: nv=29 na=23 mass_links=29 total_mass=34.134 kg  dt=0.001
+  torque limits (QP box == MuJoCo forcerange, from URDF effort): [25.0, 35.0, 88.0, 139.0] N*m over 23 joints
+  burn-in t=0: foot z=0.0360 (sole +0.0010 vs floor), contacts=0
+  burn-in end: foot z=0.0359 (sole +0.0009), contacts=0, sum fz=-0.0 N (weight 334.9 N)
+settled (base welded) for 1.2s: max joint move from seed = 0.0026 rad  (right_hip_pitch_joint)
+actuation: mode=torque kp=0 kv=0
+post-burn-in: rpy=(+0.003,-0.002,-0.001) hip_roll=(-0.003,-0.001) foot inner-gap=+0.1989
+flight probe: m=34.13 kg, launch 1.00 m/s over 0.100 s at t=1.04, F_ON 16.7 N, ctrl 500 Hz
+  t= 0.000 nc=2 com=(+0.038,+0.000,+0.6854) vz=+0.023 roll=+0.003 pitch=-0.002 status=Optimal
+  t= 0.080 nc=2 com=(+0.038,-0.000,+0.6855) vz=-0.003 roll=+0.002 pitch=-0.002 status=Optimal
+  t= 0.160 nc=2 com=(+0.038,-0.000,+0.6853) vz=-0.003 roll=+0.002 pitch=-0.001 status=Optimal
+  t= 0.240 nc=2 com=(+0.038,-0.000,+0.6851) vz=-0.002 roll=+0.001 pitch=-0.001 status=Optimal
+  t= 0.320 nc=2 com=(+0.038,-0.000,+0.6849) vz=-0.001 roll=+0.001 pitch=-0.000 status=Optimal
+  t= 0.400 nc=2 com=(+0.038,-0.000,+0.6848) vz=-0.001 roll=+0.001 pitch=-0.000 status=Optimal
+  t= 0.480 nc=2 com=(+0.038,-0.000,+0.6848) vz=-0.001 roll=+0.001 pitch=-0.000 status=Optimal
+  t= 0.560 nc=2 com=(+0.038,-0.000,+0.6847) vz=-0.001 roll=+0.000 pitch=+0.000 status=Optimal
+  t= 0.640 nc=2 com=(+0.038,-0.000,+0.6847) vz=-0.000 roll=+0.000 pitch=+0.000 status=Optimal
+  t= 0.720 nc=2 com=(+0.038,+0.000,+0.6847) vz=-0.000 roll=+0.000 pitch=+0.000 status=Optimal
+  t= 0.800 nc=2 com=(+0.038,+0.000,+0.6846) vz=-0.000 roll=+0.000 pitch=+0.000 status=Optimal
+  t= 0.880 nc=2 com=(+0.038,+0.000,+0.6846) vz=-0.000 roll=+0.000 pitch=+0.000 status=Optimal
+  t= 0.960 nc=2 com=(+0.038,+0.000,+0.6846) vz=-0.000 roll=+0.000 pitch=+0.000 status=Optimal
+  t= 1.040 nc=2 com=(+0.038,+0.000,+0.6846) vz=-0.000 roll=+0.000 pitch=+0.000 status=Optimal
+  t= 1.120 nc=2 com=(+0.038,+0.000,+0.6834) vz=-0.042 roll=+0.000 pitch=+0.001 status=Optimal
+  t= 1.200 nc=2 com=(+0.039,+0.000,+0.6763) vz=-0.142 roll=+0.000 pitch=+0.005 status=Optimal
+  t= 1.280 nc=2 com=(+0.039,+0.000,+0.6602) vz=-0.258 roll=+0.000 pitch=+0.010 status=Optimal
+  t= 1.360 nc=2 com=(+0.040,+0.000,+0.6355) vz=-0.349 roll=+0.000 pitch=+0.012 status=Optimal
+  t= 1.440 nc=2 com=(+0.040,+0.000,+0.6057) vz=-0.385 roll=+0.000 pitch=+0.009 status=Optimal
+  t= 1.520 nc=2 com=(+0.040,+0.000,+0.5756) vz=-0.358 roll=+0.000 pitch=+0.000 status=Optimal
+  t= 1.600 nc=2 com=(+0.040,+0.000,+0.5500) vz=-0.276 roll=-0.000 pitch=-0.011 status=Optimal
+  t= 1.680 nc=2 com=(+0.039,+0.000,+0.5325) vz=-0.161 roll=-0.000 pitch=-0.023 status=Optimal
+  t= 1.760 nc=2 com=(+0.037,+0.000,+0.5245) vz=-0.043 roll=-0.000 pitch=-0.030 status=Optimal
+  t= 1.840 nc=2 com=(+0.036,+0.000,+0.5235) vz=+0.003 roll=-0.000 pitch=-0.031 status=Optimal
+  t= 1.920 nc=2 com=(+0.035,+0.000,+0.5237) vz=+0.001 roll=-0.000 pitch=-0.034 status=Optimal
+  t= 2.000 nc=2 com=(+0.034,+0.000,+0.5237) vz=-0.000 roll=-0.000 pitch=-0.037 status=Optimal
+  t= 2.080 nc=2 com=(+0.034,+0.000,+0.5237) vz=-0.000 roll=-0.000 pitch=-0.039 status=Optimal
+  t= 2.160 nc=2 com=(+0.032,+0.000,+0.5279) vz=+0.340 roll=-0.000 pitch=-0.041 status=Optimal
+  t= 2.240 nc=2 com=(+0.018,+0.000,+0.5940) vz=+1.201 roll=+0.000 pitch=-0.052 status=Optimal
+  [release] t=2.298 after 0.008 s (one foot unloaded: fz 45 0)
+  [lift-off] t=2.300 com (+0.002, z 0.6719) v (-0.294, +1.310), foot x ["+0.013", "+0.014"] z ["+0.038", "+0.038"], h_ang (+0.136,+3.457,+0.060), roll -0.000 pitch -0.075
+  [hx] lift-off h_x +0.136 | base +0.108 Lleg -0.435 Rleg +0.472 waist -0.011 arms +0.003
+  [hx] crouch  dt 0.800 dh_x +0.001 ground -0.001 = fzdiff +0.022 cop -0.471 com +0.450 fy*h -0.003 | mean fzL-fzR +0.2
+  [hx] hold    dt 0.300 dh_x -0.000 ground -0.000 = fzdiff +0.011 cop -0.179 com +0.168 fy*h -0.000 | mean fzL-fzR +0.3
+  [hx] push    dt 0.156 dh_x +0.003 ground -0.041 = fzdiff -0.058 cop -0.048 com +0.161 fy*h -0.096 | mean fzL-fzR -3.1
+  [hx] release dt 0.008 dh_x +0.133 ground +0.025 = fzdiff +0.015 cop -0.025 com +0.002 fy*h +0.033 | mean fzL-fzR +15.2
+  [hx] loaded  dt 0.000 dh_x NaN ground +0.000 = fzdiff +0.000 cop +0.000 com +0.000 fy*h +0.000 | mean fzL-fzR +0.0
+  [airborne] t=2.302 both feet unloaded: h_ang (+0.131,+3.457,+0.061) com vz +1.291
+  t= 2.320 nc=0 com=(-0.004,+0.000,+0.6960) vz=+1.113 roll=+0.000 pitch=-0.076 status=Optimal
+  t= 2.400 nc=0 com=(-0.028,+0.000,+0.7532) vz=+0.327 roll=+0.002 pitch=-0.013 status=Optimal
+  t= 2.480 nc=0 com=(-0.051,+0.000,+0.7475) vz=-0.458 roll=+0.007 pitch=+0.067 status=Optimal
+  [td-foot] R first load t=2.528 | L sole z +0.0032 roll +0.009 pitch -0.012 fz 0 | R sole z -0.0004 roll +0.011 pitch -0.016 fz 621
+  [touchdown] t=2.528 after 0.228 s, com (-0.065, z 0.7140) v (-0.287, -0.911), foot x ["-0.102", "-0.102"], feet [false, true]
+  [td-foot] L first load t=2.532 | L sole z -0.0001 roll +0.009 pitch -0.010 fz 321 | R sole z -0.0033 roll +0.004 pitch +0.001 fz 1990
+  [land] t+0.01 nc=2 com x -0.068 ref -0.071 vx -0.230 | ax cmd -4.83 sol +2.00 | pitch +0.118 rate +0.961 | sole x -0.071 -0.069 cop x -0.021 -0.029 fz 863 841
+  [land] t+0.03 nc=2 com x -0.072 ref -0.078 vx -0.161 | ax cmd -9.25 sol +1.08 | pitch +0.144 rate +1.397 | sole x -0.072 -0.070 cop x -0.019 -0.017 fz 212 264
+  t= 2.560 nc=2 com=(-0.072,+0.000,+0.7057) vz=+0.042 roll=+0.008 pitch=+0.144 status=Optimal
+  [land] t+0.05 nc=2 com x -0.075 ref -0.084 vx -0.137 | ax cmd -9.13 sol +0.75 | pitch +0.172 rate +1.298 | sole x -0.073 -0.070 cop x -0.009 -0.021 fz 135 142
+  [land] t+0.07 nc=2 com x -0.077 ref -0.088 vx -0.125 | ax cmd -7.39 sol +0.63 | pitch +0.197 rate +1.178 | sole x -0.073 -0.070 cop x -0.005 -0.035 fz 154 125
+  [land] t+0.09 nc=2 com x -0.080 ref -0.092 vx -0.119 | ax cmd -4.81 sol +0.59 | pitch +0.220 rate +1.118 | sole x -0.073 -0.070 cop x -0.008 -0.034 fz 164 137
+  [land] t+0.11 nc=2 com x -0.082 ref -0.095 vx -0.114 | ax cmd -1.92 sol +0.59 | pitch +0.243 rate +1.109 | sole x -0.073 -0.070 cop x -0.011 -0.031 fz 168 148
+  t= 2.640 nc=2 com=(-0.082,+0.000,+0.7061) vz=-0.048 roll=-0.004 pitch=+0.243 status=Optimal
+  [land] t+0.13 nc=2 com x -0.084 ref -0.097 vx -0.111 | ax cmd +0.99 sol +0.90 | pitch +0.265 rate +1.116 | sole x -0.073 -0.070 cop x -0.036 -0.040 fz 160 167
+  [land] t+0.15 nc=2 com x -0.087 ref -0.098 vx -0.103 | ax cmd +3.07 sol +1.09 | pitch +0.287 rate +1.089 | sole x -0.073 -0.071 cop x -0.043 -0.052 fz 147 193
+  [land] t+0.17 nc=2 com x -0.088 ref -0.098 vx -0.089 | ax cmd +3.91 sol +1.20 | pitch +0.309 rate +1.002 | sole x -0.073 -0.071 cop x -0.053 -0.059 fz 153 199
+  [land] t+0.19 nc=2 com x -0.090 ref -0.099 vx -0.073 | ax cmd +3.45 sol +1.16 | pitch +0.328 rate +0.904 | sole x -0.073 -0.071 cop x -0.056 -0.062 fz 155 198
+  t= 2.720 nc=2 com=(-0.090,+0.000,+0.7011) vz=-0.059 roll=-0.008 pitch=+0.328 status=Optimal
+  [land] t+0.21 nc=2 com x -0.091 ref -0.099 vx -0.059 | ax cmd +2.48 sol +1.08 | pitch +0.345 rate +0.839 | sole x -0.073 -0.071 cop x -0.054 -0.061 fz 151 196
+  [land] t+0.23 nc=2 com x -0.092 ref -0.099 vx -0.046 | ax cmd +1.73 sol +1.05 | pitch +0.362 rate +0.787 | sole x -0.073 -0.071 cop x -0.054 -0.061 fz 153 196
+  [land] t+0.25 nc=2 com x -0.093 ref -0.099 vx -0.034 | ax cmd +0.98 sol +1.03 | pitch +0.377 rate +0.746 | sole x -0.073 -0.071 cop x -0.055 -0.062 fz 151 196
+  [land] t+0.27 nc=2 com x -0.094 ref -0.099 vx -0.022 | ax cmd +0.18 sol +1.02 | pitch +0.392 rate +0.709 | sole x -0.073 -0.071 cop x -0.055 -0.062 fz 151 196
+  t= 2.800 nc=2 com=(-0.094,+0.001,+0.6968) vz=-0.051 roll=-0.011 pitch=+0.392 status=Optimal
+  [land] t+0.29 nc=2 com x -0.094 ref -0.099 vx -0.010 | ax cmd -0.68 sol +1.02 | pitch +0.406 rate +0.675 | sole x -0.073 -0.071 cop x -0.056 -0.062 fz 152 196
+  [land] t+0.31 nc=2 com x -0.094 ref -0.099 vx +0.001 | ax cmd -1.59 sol +1.01 | pitch +0.419 rate +0.643 | sole x -0.073 -0.071 cop x -0.056 -0.062 fz 152 195
+  [land] t+0.33 nc=2 com x -0.094 ref -0.099 vx +0.013 | ax cmd -2.58 sol +1.01 | pitch +0.432 rate +0.613 | sole x -0.073 -0.071 cop x -0.056 -0.063 fz 153 195
+  [land] t+0.35 nc=2 com x -0.094 ref -0.099 vx +0.025 | ax cmd -3.66 sol +0.99 | pitch +0.444 rate +0.581 | sole x -0.073 -0.071 cop x -0.057 -0.063 fz 158 188
+  t= 2.880 nc=2 com=(-0.094,+0.001,+0.6930) vz=-0.044 roll=-0.014 pitch=+0.444 status=Optimal
+  [land] t+0.37 nc=2 com x -0.093 ref -0.099 vx +0.036 | ax cmd -4.79 sol +0.99 | pitch +0.455 rate +0.553 | sole x -0.074 -0.071 cop x -0.058 -0.061 fz 162 189
+  [land] t+0.39 nc=2 com x -0.092 ref -0.099 vx +0.048 | ax cmd -5.99 sol +0.98 | pitch +0.466 rate +0.528 | sole x -0.074 -0.071 cop x -0.059 -0.061 fz 167 180
+  [land] t+0.41 nc=2 com x -0.091 ref -0.099 vx +0.060 | ax cmd -7.24 sol +0.62 | pitch +0.476 rate +0.497 | sole x -0.074 -0.071 cop x -0.046 -0.041 fz 168 173
+  [land] t+0.43 nc=2 com x -0.090 ref -0.099 vx +0.062 | ax cmd -7.82 sol +0.29 | pitch +0.486 rate +0.481 | sole x -0.074 -0.071 cop x -0.018 -0.015 fz 173 172
+  t= 2.960 nc=2 com=(-0.090,+0.001,+0.6898) vz=-0.037 roll=-0.015 pitch=+0.486 status=Optimal
+  [land] t+0.45 nc=2 com x -0.089 ref -0.099 vx +0.062 | ax cmd -8.13 sol +0.17 | pitch +0.496 rate +0.462 | sole x -0.074 -0.071 cop x -0.009 -0.005 fz 172 171
+  [land] t+0.47 nc=2 com x -0.087 ref -0.099 vx +0.060 | ax cmd -8.36 sol +0.09 | pitch +0.505 rate +0.439 | sole x -0.074 -0.071 cop x -0.005 -0.001 fz 172 172
+  [land] t+0.49 nc=2 com x -0.086 ref -0.099 vx +0.058 | ax cmd -8.53 sol +0.04 | pitch +0.513 rate +0.415 | sole x -0.073 -0.071 cop x -0.003 +0.001 fz 172 172
+  [land] t+0.51 nc=2 com x -0.085 ref -0.099 vx +0.062 | ax cmd -9.25 sol +0.20 | pitch +0.521 rate +0.343 | sole x -0.074 -0.071 cop x -0.030 -0.034 fz 182 172
+  t= 3.040 nc=2 com=(-0.085,+0.002,+0.6869) vz=-0.034 roll=-0.016 pitch=+0.521 status=Optimal
+  [land] t+0.53 nc=2 com x -0.084 ref -0.099 vx +0.072 | ax cmd -10.41 sol +0.14 | pitch +0.527 rate +0.269 | sole x -0.074 -0.071 cop x -0.032 -0.036 fz 181 169
+  [land] t+0.55 nc=2 com x -0.082 ref -0.099 vx +0.081 | ax cmd -11.67 sol +0.10 | pitch +0.532 rate +0.217 | sole x -0.074 -0.071 cop x -0.032 -0.038 fz 182 165
+  [land] t+0.57 nc=2 com x -0.080 ref -0.099 vx +0.092 | ax cmd -13.03 sol +0.04 | pitch +0.536 rate +0.176 | sole x -0.074 -0.072 cop x -0.033 -0.037 fz 180 163
+  [land] t+0.59 nc=2 com x -0.078 ref -0.099 vx +0.103 | ax cmd -14.49 sol -0.04 | pitch +0.539 rate +0.139 | sole x -0.074 -0.072 cop x -0.034 -0.035 fz 178 162
+  t= 3.120 nc=2 com=(-0.078,+0.002,+0.6846) vz=-0.028 roll=-0.014 pitch=+0.539 status=Optimal
+  [land] t+0.61 nc=2 com x -0.076 ref -0.099 vx +0.113 | ax cmd -16.03 sol -0.20 | pitch +0.541 rate +0.089 | sole x -0.074 -0.072 cop x -0.037 -0.019 fz 166 176
+  [land] t+0.63 nc=2 com x -0.074 ref -0.100 vx +0.124 | ax cmd -17.57 sol -0.38 | pitch +0.542 rate +0.015 | sole x -0.074 -0.072 cop x -0.034 -0.007 fz 161 183
+  [land] t+0.65 nc=2 com x -0.071 ref -0.100 vx +0.133 | ax cmd -19.07 sol -0.56 | pitch +0.541 rate -0.076 | sole x -0.074 -0.072 cop x -0.023 -0.001 fz 166 178
+  [land] t+0.67 nc=2 com x -0.069 ref -0.100 vx +0.140 | ax cmd -20.49 sol -0.74 | pitch +0.538 rate -0.178 | sole x -0.074 -0.072 cop x -0.013 +0.005 fz 171 175
+  t= 3.200 nc=2 com=(-0.069,+0.001,+0.6823) vz=-0.028 roll=-0.006 pitch=+0.538 status=Optimal
+  [land] t+0.69 nc=2 com x -0.066 ref -0.100 vx +0.146 | ax cmd -21.81 sol -0.91 | pitch +0.533 rate -0.285 | sole x -0.074 -0.072 cop x -0.004 +0.012 fz 174 172
+  [land] t+0.71 nc=2 com x -0.063 ref -0.100 vx +0.149 | ax cmd -22.99 sol -1.07 | pitch +0.526 rate -0.394 | sole x -0.074 -0.072 cop x +0.005 +0.020 fz 176 170
+  [land] t+0.73 nc=2 com x -0.060 ref -0.100 vx +0.151 | ax cmd -24.03 sol -1.19 | pitch +0.516 rate -0.497 | sole x -0.074 -0.072 cop x +0.013 +0.027 fz 177 171
+  [land] t+0.75 nc=2 com x -0.057 ref -0.100 vx +0.151 | ax cmd -24.91 sol -1.30 | pitch +0.505 rate -0.591 | sole x -0.074 -0.072 cop x +0.020 +0.033 fz 178 171
+  t= 3.280 nc=2 com=(-0.057,+0.002,+0.6803) vz=-0.020 roll=+0.004 pitch=+0.505 status=Optimal
+  [land] t+0.77 nc=2 com x -0.054 ref -0.100 vx +0.149 | ax cmd -25.63 sol -1.37 | pitch +0.492 rate -0.674 | sole x -0.074 -0.072 cop x +0.027 +0.039 fz 178 172
+  [land] t+0.79 nc=2 com x -0.051 ref -0.099 vx +0.145 | ax cmd -26.19 sol -1.42 | pitch +0.477 rate -0.742 | sole x -0.074 -0.072 cop x +0.033 +0.044 fz 180 173
+  [land] t+0.81 nc=2 com x -0.048 ref -0.099 vx +0.140 | ax cmd -26.65 sol -1.45 | pitch +0.461 rate -0.791 | sole x -0.074 -0.071 cop x +0.038 +0.046 fz 181 172
+  [land] t+0.83 nc=2 com x -0.045 ref -0.099 vx +0.134 | ax cmd -26.93 sol -1.47 | pitch +0.445 rate -0.830 | sole x -0.074 -0.071 cop x +0.044 +0.044 fz 185 182
+  t= 3.360 nc=2 com=(-0.045,+0.002,+0.6794) vz=-0.001 roll=+0.006 pitch=+0.445 status=Optimal
+  [land] t+0.85 nc=2 com x -0.043 ref -0.099 vx +0.127 | ax cmd -27.09 sol -1.46 | pitch +0.428 rate -0.858 | sole x -0.074 -0.071 cop x +0.050 +0.085 fz 183 134
+  [land] t+0.87 nc=2 com x -0.040 ref -0.099 vx +0.118 | ax cmd -27.05 sol -1.43 | pitch +0.410 rate -0.879 | sole x -0.073 -0.071 cop x +0.053 +0.056 fz 177 179
+  [land] t+0.89 nc=2 com x -0.038 ref -0.099 vx +0.109 | ax cmd -26.97 sol -1.40 | pitch +0.392 rate -0.883 | sole x -0.073 -0.070 cop x +0.056 +0.060 fz 179 172
+  [land] t+0.91 nc=2 com x -0.036 ref -0.099 vx +0.099 | ax cmd -26.78 sol -1.36 | pitch +0.375 rate -0.877 | sole x -0.073 -0.070 cop x +0.061 +0.060 fz 182 175
+  t= 3.440 nc=2 com=(-0.036,+0.002,+0.6801) vz=+0.019 roll=+0.001 pitch=+0.375 status=Optimal
+  [land] t+0.93 nc=2 com x -0.034 ref -0.098 vx +0.089 | ax cmd -26.50 sol -1.32 | pitch +0.357 rate -0.863 | sole x -0.073 -0.070 cop x +0.063 +0.063 fz 183 172
+  [land] t+0.95 nc=2 com x -0.032 ref -0.098 vx +0.079 | ax cmd -26.17 sol -1.28 | pitch +0.340 rate -0.840 | sole x -0.073 -0.070 cop x +0.067 +0.065 fz 183 170
+  [land] t+0.97 nc=2 com x -0.031 ref -0.098 vx +0.069 | ax cmd -25.73 sol -1.23 | pitch +0.323 rate -0.813 | sole x -0.073 -0.070 cop x +0.069 +0.067 fz 183 168
+  [land] t+0.99 nc=2 com x -0.030 ref -0.098 vx +0.058 | ax cmd -25.23 sol -1.18 | pitch +0.307 rate -0.780 | sole x -0.073 -0.069 cop x +0.071 +0.069 fz 184 166
+  t= 3.520 nc=2 com=(-0.030,+0.003,+0.6824) vz=+0.035 roll=-0.004 pitch=+0.307 status=Optimal
+  [land] t+1.01 nc=2 com x -0.028 ref -0.098 vx +0.047 | ax cmd -24.66 sol -1.14 | pitch +0.292 rate -0.744 | sole x -0.073 -0.069 cop x +0.073 +0.070 fz 184 165
+  [land] t+1.03 nc=2 com x -0.028 ref -0.098 vx +0.037 | ax cmd -24.04 sol -1.10 | pitch +0.277 rate -0.706 | sole x -0.073 -0.069 cop x +0.076 +0.071 fz 182 162
+  [land] t+1.05 nc=2 com x -0.027 ref -0.098 vx +0.026 | ax cmd -23.35 sol -1.07 | pitch +0.263 rate -0.666 | sole x -0.073 -0.069 cop x +0.075 +0.073 fz 185 162
+  [land] t+1.07 nc=2 com x -0.027 ref -0.098 vx +0.016 | ax cmd -22.62 sol -1.04 | pitch +0.250 rate -0.624 | sole x -0.073 -0.069 cop x +0.076 +0.074 fz 185 159
+  t= 3.600 nc=2 com=(-0.027,+0.004,+0.6856) vz=+0.043 roll=-0.005 pitch=+0.250 status=Optimal
+  [land] t+1.09 nc=2 com x -0.026 ref -0.098 vx +0.005 | ax cmd -21.83 sol -1.02 | pitch +0.238 rate -0.582 | sole x -0.073 -0.069 cop x +0.077 +0.074 fz 185 159
+  [land] t+1.11 nc=2 com x -0.026 ref -0.098 vx -0.005 | ax cmd -20.98 sol -1.00 | pitch +0.227 rate -0.541 | sole x -0.073 -0.069 cop x +0.078 +0.074 fz 185 158
+  [land] t+1.13 nc=2 com x -0.027 ref -0.098 vx -0.015 | ax cmd -20.08 sol -0.99 | pitch +0.216 rate -0.500 | sole x -0.073 -0.069 cop x +0.078 +0.074 fz 185 158
+  [land] t+1.15 nc=2 com x -0.027 ref -0.098 vx -0.025 | ax cmd -19.13 sol -0.98 | pitch +0.207 rate -0.460 | sole x -0.073 -0.069 cop x +0.079 +0.074 fz 183 157
+  t= 3.680 nc=2 com=(-0.027,+0.005,+0.6890) vz=+0.041 roll=-0.005 pitch=+0.207 status=Optimal
+  [land] t+1.17 nc=2 com x -0.028 ref -0.098 vx -0.035 | ax cmd -18.14 sol -0.99 | pitch +0.198 rate -0.421 | sole x -0.073 -0.069 cop x +0.085 +0.074 fz 176 157
+  [land] t+1.19 nc=2 com x -0.028 ref -0.098 vx -0.045 | ax cmd -17.09 sol -0.99 | pitch +0.189 rate -0.384 | sole x -0.073 -0.069 cop x +0.085 +0.074 fz 174 157
+  [land] t+1.21 nc=2 com x -0.029 ref -0.097 vx -0.054 | ax cmd -16.09 sol -1.02 | pitch +0.182 rate -0.342 | sole x -0.073 -0.068 cop x +0.085 +0.068 fz 171 160
+  [land] t+1.23 nc=2 com x -0.031 ref -0.097 vx -0.061 | ax cmd -15.07 sol -1.05 | pitch +0.175 rate -0.290 | sole x -0.072 -0.069 cop x +0.085 +0.085 fz 163 140
+  t= 3.760 nc=2 com=(-0.031,+0.005,+0.6919) vz=+0.035 roll=-0.002 pitch=+0.175 status=Optimal
+  [land] t+1.25 nc=2 com x -0.032 ref -0.097 vx -0.071 | ax cmd -13.74 sol -1.12 | pitch +0.170 rate -0.252 | sole x -0.071 -0.069 cop x +0.085 +0.085 fz 160 155
+  [land] t+1.27 nc=2 com x -0.033 ref -0.096 vx -0.077 | ax cmd -12.48 sol -1.22 | pitch +0.165 rate -0.221 | sole x -0.068 -0.070 cop x +0.085 +0.085 fz 157 152
+  [land] t+1.29 nc=2 com x -0.035 ref -0.094 vx -0.093 | ax cmd -10.13 sol -1.27 | pitch +0.160 rate -0.223 | sole x -0.064 -0.069 cop x +0.085 +0.051 fz 199 191
+  [land] t+1.31 nc=2 com x -0.037 ref -0.093 vx -0.098 | ax cmd -8.94 sol -1.25 | pitch +0.156 rate -0.172 | sole x -0.063 -0.069 cop x +0.043 +0.040 fz 158 234
+  t= 3.840 nc=2 com=(-0.037,+0.006,+0.6937) vz=+0.029 roll=+0.004 pitch=+0.156 status=Optimal
+  [land] t+1.33 nc=2 com x -0.039 ref -0.092 vx -0.101 | ax cmd -7.88 sol -1.41 | pitch +0.152 rate -0.163 | sole x -0.062 -0.069 cop x +0.085 +0.085 fz 71 207
+  [land] t+1.35 nc=2 com x -0.041 ref -0.092 vx -0.121 | ax cmd -5.51 sol -1.33 | pitch +0.149 rate -0.162 | sole x -0.062 -0.068 cop x +0.085 +0.085 fz 131 174
+  [land] t+1.37 nc=2 com x -0.044 ref -0.092 vx -0.132 | ax cmd -3.88 sol -1.43 | pitch +0.145 rate -0.188 | sole x -0.062 -0.068 cop x +0.085 +0.085 fz 165 132
+  [land] t+1.39 nc=2 com x -0.047 ref -0.091 vx -0.142 | ax cmd -2.05 sol -0.93 | pitch +0.142 rate -0.172 | sole x -0.062 -0.067 cop x +0.001 +0.067 fz 254 149
+  t= 3.920 nc=2 com=(-0.047,+0.007,+0.6941) vz=+0.000 roll=+0.005 pitch=+0.142 status=Optimal
+  [land] t+1.41 nc=2 com x -0.049 ref -0.091 vx -0.141 | ax cmd -1.27 sol -0.38 | pitch +0.138 rate -0.201 | sole x -0.062 -0.067 cop x +0.079 -0.045 fz 95 232
+  [land] t+1.43 nc=2 com x -0.052 ref -0.091 vx -0.132 | ax cmd -1.15 sol -0.23 | pitch +0.134 rate -0.169 | sole x -0.063 -0.067 cop x -0.028 +0.017 fz 166 89
+  [land] t+1.45 nc=2 com x -0.055 ref -0.091 vx -0.122 | ax cmd -1.28 sol -0.41 | pitch +0.131 rate -0.176 | sole x -0.063 -0.067 cop x -0.020 -0.003 fz 171 175
+  [land] t+1.47 nc=2 com x -0.057 ref -0.091 vx -0.114 | ax cmd -1.17 sol -0.35 | pitch +0.127 rate -0.175 | sole x -0.063 -0.067 cop x -0.026 -0.015 fz 168 167
+  t= 4.000 nc=2 com=(-0.057,+0.007,+0.6933) vz=-0.013 roll=+0.004 pitch=+0.127 status=Optimal
+  [land] t+1.49 nc=2 com x -0.059 ref -0.091 vx -0.107 | ax cmd -1.07 sol -0.30 | pitch +0.124 rate -0.183 | sole x -0.063 -0.067 cop x -0.030 -0.017 fz 169 171
+  [land] t+1.51 nc=2 com x -0.061 ref -0.091 vx -0.101 | ax cmd -1.00 sol -0.28 | pitch +0.120 rate -0.193 | sole x -0.063 -0.067 cop x -0.031 -0.017 fz 171 173
+  [land] t+1.53 nc=2 com x -0.063 ref -0.091 vx -0.094 | ax cmd -0.95 sol -0.27 | pitch +0.116 rate -0.200 | sole x -0.063 -0.067 cop x -0.031 -0.018 fz 173 173
+  [land] t+1.55 nc=2 com x -0.065 ref -0.092 vx -0.088 | ax cmd -0.91 sol -0.27 | pitch +0.112 rate -0.204 | sole x -0.063 -0.067 cop x -0.031 -0.018 fz 172 173
+  t= 4.080 nc=2 com=(-0.065,+0.007,+0.6920) vz=-0.016 roll=+0.004 pitch=+0.112 status=Optimal
+  [land] t+1.57 nc=2 com x -0.067 ref -0.092 vx -0.082 | ax cmd -0.88 sol -0.27 | pitch +0.108 rate -0.206 | sole x -0.063 -0.067 cop x -0.031 -0.018 fz 172 173
+  [land] t+1.59 nc=2 com x -0.068 ref -0.092 vx -0.077 | ax cmd -0.84 sol -0.26 | pitch +0.103 rate -0.207 | sole x -0.063 -0.067 cop x -0.031 -0.018 fz 172 173
+  [land] t+1.61 nc=2 com x -0.070 ref -0.092 vx -0.072 | ax cmd -0.81 sol -0.26 | pitch +0.099 rate -0.207 | sole x -0.063 -0.067 cop x -0.031 -0.018 fz 172 173
+  [land] t+1.63 nc=2 com x -0.071 ref -0.092 vx -0.067 | ax cmd -0.77 sol -0.26 | pitch +0.095 rate -0.206 | sole x -0.063 -0.067 cop x -0.032 -0.019 fz 172 173
+  t= 4.160 nc=2 com=(-0.071,+0.007,+0.6908) vz=-0.013 roll=+0.004 pitch=+0.095 status=Optimal
+  [land] t+1.65 nc=2 com x -0.072 ref -0.092 vx -0.063 | ax cmd -0.73 sol -0.25 | pitch +0.091 rate -0.205 | sole x -0.063 -0.067 cop x -0.032 -0.019 fz 172 173
+  [land] t+1.67 nc=2 com x -0.074 ref -0.092 vx -0.059 | ax cmd -0.70 sol -0.25 | pitch +0.087 rate -0.203 | sole x -0.063 -0.067 cop x -0.032 -0.019 fz 172 173
+  [land] t+1.69 nc=2 com x -0.075 ref -0.092 vx -0.055 | ax cmd -0.66 sol -0.24 | pitch +0.083 rate -0.200 | sole x -0.063 -0.067 cop x -0.032 -0.019 fz 172 173
+  [land] t+1.71 nc=2 com x -0.076 ref -0.092 vx -0.051 | ax cmd -0.63 sol -0.24 | pitch +0.079 rate -0.196 | sole x -0.063 -0.067 cop x -0.032 -0.019 fz 172 173
+  t= 4.240 nc=2 com=(-0.076,+0.007,+0.6898) vz=-0.011 roll=+0.003 pitch=+0.079 status=Optimal
+  [land] t+1.73 nc=2 com x -0.077 ref -0.092 vx -0.048 | ax cmd -0.60 sol -0.23 | pitch +0.075 rate -0.193 | sole x -0.063 -0.067 cop x -0.032 -0.019 fz 172 173
+  [land] t+1.75 nc=2 com x -0.078 ref -0.092 vx -0.045 | ax cmd -0.57 sol -0.22 | pitch +0.071 rate -0.188 | sole x -0.063 -0.067 cop x -0.032 -0.019 fz 172 173
+  [land] t+1.77 nc=2 com x -0.079 ref -0.092 vx -0.042 | ax cmd -0.54 sol -0.22 | pitch +0.067 rate -0.184 | sole x -0.063 -0.067 cop x -0.032 -0.019 fz 172 173
+  [land] t+1.79 nc=2 com x -0.079 ref -0.092 vx -0.039 | ax cmd -0.51 sol -0.21 | pitch +0.064 rate -0.179 | sole x -0.063 -0.067 cop x -0.032 -0.019 fz 172 173
+  t= 4.320 nc=2 com=(-0.079,+0.007,+0.6890) vz=-0.010 roll=+0.002 pitch=+0.064 status=Optimal
+  [land] t+1.81 nc=2 com x -0.080 ref -0.092 vx -0.037 | ax cmd -0.48 sol -0.20 | pitch +0.060 rate -0.175 | sole x -0.063 -0.067 cop x -0.032 -0.020 fz 171 173
+  [land] t+1.83 nc=2 com x -0.081 ref -0.092 vx -0.035 | ax cmd -0.45 sol -0.20 | pitch +0.057 rate -0.170 | sole x -0.063 -0.067 cop x -0.032 -0.020 fz 171 173
+  [land] t+1.85 nc=2 com x -0.082 ref -0.092 vx -0.033 | ax cmd -0.42 sol -0.19 | pitch +0.053 rate -0.164 | sole x -0.063 -0.067 cop x -0.032 -0.020 fz 171 173
+  [land] t+1.87 nc=2 com x -0.082 ref -0.092 vx -0.031 | ax cmd -0.39 sol -0.19 | pitch +0.050 rate -0.159 | sole x -0.063 -0.067 cop x -0.032 -0.020 fz 171 173
+  t= 4.400 nc=2 com=(-0.082,+0.007,+0.6883) vz=-0.008 roll=+0.002 pitch=+0.050 status=Optimal
+  [land] t+1.89 nc=2 com x -0.083 ref -0.092 vx -0.029 | ax cmd -0.37 sol -0.18 | pitch +0.047 rate -0.154 | sole x -0.063 -0.067 cop x -0.032 -0.020 fz 171 173
+  [land] t+1.91 nc=2 com x -0.083 ref -0.092 vx -0.027 | ax cmd -0.34 sol -0.17 | pitch +0.044 rate -0.149 | sole x -0.063 -0.067 cop x -0.032 -0.020 fz 171 173
+  [land] t+1.93 nc=2 com x -0.084 ref -0.092 vx -0.025 | ax cmd -0.32 sol -0.17 | pitch +0.041 rate -0.144 | sole x -0.063 -0.067 cop x -0.032 -0.020 fz 171 173
+  [land] t+1.95 nc=2 com x -0.084 ref -0.092 vx -0.024 | ax cmd -0.29 sol -0.16 | pitch +0.038 rate -0.138 | sole x -0.063 -0.067 cop x -0.032 -0.020 fz 171 173
+  t= 4.480 nc=2 com=(-0.084,+0.007,+0.6877) vz=-0.007 roll=+0.001 pitch=+0.038 status=Optimal
+  [land] t+1.97 nc=2 com x -0.085 ref -0.092 vx -0.022 | ax cmd -0.27 sol -0.15 | pitch +0.036 rate -0.133 | sole x -0.063 -0.067 cop x -0.032 -0.020 fz 171 173
+  [land] t+1.99 nc=2 com x -0.085 ref -0.092 vx -0.021 | ax cmd -0.25 sol -0.15 | pitch +0.033 rate -0.128 | sole x -0.063 -0.067 cop x -0.032 -0.020 fz 171 173
+  [land] t+2.01 nc=2 com x -0.086 ref -0.092 vx -0.020 | ax cmd -0.23 sol -0.14 | pitch +0.030 rate -0.123 | sole x -0.063 -0.067 cop x -0.032 -0.020 fz 171 173
+  [land] t+2.03 nc=2 com x -0.086 ref -0.092 vx -0.019 | ax cmd -0.21 sol -0.14 | pitch +0.028 rate -0.118 | sole x -0.063 -0.067 cop x -0.032 -0.020 fz 171 173
+  t= 4.560 nc=2 com=(-0.086,+0.007,+0.6871) vz=-0.006 roll=+0.001 pitch=+0.028 status=Optimal
+  [land] t+2.05 nc=2 com x -0.086 ref -0.092 vx -0.018 | ax cmd -0.19 sol -0.13 | pitch +0.026 rate -0.114 | sole x -0.063 -0.067 cop x -0.032 -0.020 fz 171 173
+  [land] t+2.07 nc=2 com x -0.087 ref -0.092 vx -0.016 | ax cmd -0.17 sol -0.13 | pitch +0.023 rate -0.109 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.09 nc=2 com x -0.087 ref -0.092 vx -0.016 | ax cmd -0.16 sol -0.12 | pitch +0.021 rate -0.104 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.11 nc=2 com x -0.087 ref -0.092 vx -0.015 | ax cmd -0.14 sol -0.12 | pitch +0.019 rate -0.100 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  t= 4.640 nc=2 com=(-0.087,+0.007,+0.6867) vz=-0.005 roll=+0.001 pitch=+0.019 status=Optimal
+  [land] t+2.13 nc=2 com x -0.088 ref -0.092 vx -0.014 | ax cmd -0.12 sol -0.11 | pitch +0.017 rate -0.096 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.15 nc=2 com x -0.088 ref -0.092 vx -0.013 | ax cmd -0.11 sol -0.11 | pitch +0.015 rate -0.092 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.17 nc=2 com x -0.088 ref -0.092 vx -0.012 | ax cmd -0.09 sol -0.10 | pitch +0.014 rate -0.088 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.19 nc=2 com x -0.088 ref -0.092 vx -0.012 | ax cmd -0.08 sol -0.10 | pitch +0.012 rate -0.084 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  t= 4.720 nc=2 com=(-0.088,+0.007,+0.6863) vz=-0.004 roll=+0.000 pitch=+0.012 status=Optimal
+  [land] t+2.21 nc=2 com x -0.089 ref -0.092 vx -0.011 | ax cmd -0.07 sol -0.10 | pitch +0.010 rate -0.080 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.23 nc=2 com x -0.089 ref -0.092 vx -0.010 | ax cmd -0.05 sol -0.09 | pitch +0.009 rate -0.076 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.25 nc=2 com x -0.089 ref -0.092 vx -0.010 | ax cmd -0.04 sol -0.09 | pitch +0.007 rate -0.073 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.27 nc=2 com x -0.089 ref -0.092 vx -0.009 | ax cmd -0.03 sol -0.08 | pitch +0.006 rate -0.069 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  t= 4.800 nc=2 com=(-0.089,+0.007,+0.6860) vz=-0.004 roll=-0.000 pitch=+0.006 status=Optimal
+  [land] t+2.29 nc=2 com x -0.089 ref -0.092 vx -0.009 | ax cmd -0.02 sol -0.08 | pitch +0.004 rate -0.066 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.31 nc=2 com x -0.090 ref -0.092 vx -0.008 | ax cmd -0.01 sol -0.08 | pitch +0.003 rate -0.063 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.33 nc=2 com x -0.090 ref -0.092 vx -0.008 | ax cmd +0.00 sol -0.07 | pitch +0.002 rate -0.060 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.35 nc=2 com x -0.090 ref -0.092 vx -0.007 | ax cmd +0.01 sol -0.07 | pitch +0.001 rate -0.057 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  t= 4.880 nc=2 com=(-0.090,+0.007,+0.6858) vz=-0.003 roll=-0.000 pitch=+0.001 status=Optimal
+  [land] t+2.37 nc=2 com x -0.090 ref -0.092 vx -0.007 | ax cmd +0.02 sol -0.07 | pitch -0.000 rate -0.054 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.39 nc=2 com x -0.090 ref -0.092 vx -0.006 | ax cmd +0.03 sol -0.06 | pitch -0.001 rate -0.052 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.41 nc=2 com x -0.090 ref -0.092 vx -0.006 | ax cmd +0.04 sol -0.06 | pitch -0.002 rate -0.049 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.43 nc=2 com x -0.090 ref -0.092 vx -0.006 | ax cmd +0.05 sol -0.06 | pitch -0.003 rate -0.047 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  t= 4.960 nc=2 com=(-0.090,+0.007,+0.6855) vz=-0.002 roll=-0.001 pitch=-0.003 status=Optimal
+  [land] t+2.45 nc=2 com x -0.091 ref -0.092 vx -0.005 | ax cmd +0.05 sol -0.06 | pitch -0.004 rate -0.045 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.47 nc=2 com x -0.091 ref -0.092 vx -0.005 | ax cmd +0.06 sol -0.05 | pitch -0.005 rate -0.042 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.49 nc=2 com x -0.091 ref -0.092 vx -0.005 | ax cmd +0.07 sol -0.05 | pitch -0.006 rate -0.040 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.51 nc=2 com x -0.091 ref -0.092 vx -0.005 | ax cmd +0.07 sol -0.05 | pitch -0.007 rate -0.038 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  t= 5.040 nc=2 com=(-0.091,+0.007,+0.6854) vz=-0.002 roll=-0.001 pitch=-0.007 status=Optimal
+  [land] t+2.53 nc=2 com x -0.091 ref -0.092 vx -0.004 | ax cmd +0.08 sol -0.05 | pitch -0.008 rate -0.036 | sole x -0.063 -0.067 cop x -0.032 -0.021 fz 171 173
+  [land] t+2.55 nc=2 com x -0.091 ref -0.092 vx -0.004 | ax cmd +0.08 sol -0.05 | pitch -0.008 rate -0.034 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 173
+  [land] t+2.57 nc=2 com x -0.091 ref -0.092 vx -0.004 | ax cmd +0.09 sol -0.04 | pitch -0.009 rate -0.033 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 173
+  [land] t+2.59 nc=2 com x -0.091 ref -0.092 vx -0.004 | ax cmd +0.10 sol -0.04 | pitch -0.010 rate -0.031 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 173
+  t= 5.120 nc=2 com=(-0.091,+0.007,+0.6852) vz=-0.002 roll=-0.001 pitch=-0.010 status=Optimal
+  [land] t+2.61 nc=2 com x -0.091 ref -0.092 vx -0.003 | ax cmd +0.10 sol -0.04 | pitch -0.010 rate -0.029 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  [land] t+2.63 nc=2 com x -0.091 ref -0.092 vx -0.003 | ax cmd +0.11 sol -0.04 | pitch -0.011 rate -0.028 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  [land] t+2.65 nc=2 com x -0.091 ref -0.092 vx -0.003 | ax cmd +0.11 sol -0.04 | pitch -0.011 rate -0.026 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  [land] t+2.67 nc=2 com x -0.091 ref -0.092 vx -0.003 | ax cmd +0.11 sol -0.04 | pitch -0.012 rate -0.025 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  t= 5.200 nc=2 com=(-0.091,+0.007,+0.6851) vz=-0.001 roll=-0.001 pitch=-0.012 status=Optimal
+  [land] t+2.69 nc=2 com x -0.091 ref -0.092 vx -0.003 | ax cmd +0.12 sol -0.03 | pitch -0.012 rate -0.024 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  [land] t+2.71 nc=2 com x -0.092 ref -0.092 vx -0.003 | ax cmd +0.12 sol -0.03 | pitch -0.013 rate -0.022 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  [land] t+2.73 nc=2 com x -0.092 ref -0.092 vx -0.002 | ax cmd +0.12 sol -0.03 | pitch -0.013 rate -0.021 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  [land] t+2.75 nc=2 com x -0.092 ref -0.092 vx -0.002 | ax cmd +0.13 sol -0.03 | pitch -0.014 rate -0.020 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  t= 5.280 nc=2 com=(-0.092,+0.007,+0.6850) vz=-0.001 roll=-0.001 pitch=-0.014 status=Optimal
+  [land] t+2.77 nc=2 com x -0.092 ref -0.092 vx -0.002 | ax cmd +0.13 sol -0.03 | pitch -0.014 rate -0.019 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  [land] t+2.79 nc=2 com x -0.092 ref -0.092 vx -0.002 | ax cmd +0.13 sol -0.03 | pitch -0.014 rate -0.018 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  [land] t+2.81 nc=2 com x -0.092 ref -0.092 vx -0.002 | ax cmd +0.14 sol -0.03 | pitch -0.015 rate -0.017 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  [land] t+2.83 nc=2 com x -0.092 ref -0.092 vx -0.002 | ax cmd +0.14 sol -0.03 | pitch -0.015 rate -0.016 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  t= 5.360 nc=2 com=(-0.092,+0.007,+0.6849) vz=-0.001 roll=-0.002 pitch=-0.015 status=Optimal
+  [land] t+2.85 nc=2 com x -0.092 ref -0.092 vx -0.002 | ax cmd +0.14 sol -0.03 | pitch -0.015 rate -0.015 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  [land] t+2.87 nc=2 com x -0.092 ref -0.092 vx -0.002 | ax cmd +0.14 sol -0.02 | pitch -0.016 rate -0.014 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  [land] t+2.89 nc=2 com x -0.092 ref -0.092 vx -0.002 | ax cmd +0.15 sol -0.02 | pitch -0.016 rate -0.013 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 171 174
+  [land] t+2.91 nc=2 com x -0.092 ref -0.092 vx -0.001 | ax cmd +0.15 sol -0.02 | pitch -0.016 rate -0.013 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 170 174
+  t= 5.440 nc=2 com=(-0.092,+0.007,+0.6848) vz=-0.001 roll=-0.002 pitch=-0.016 status=Optimal
+  [land] t+2.93 nc=2 com x -0.092 ref -0.092 vx -0.001 | ax cmd +0.15 sol -0.02 | pitch -0.016 rate -0.012 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 170 174
+  [land] t+2.95 nc=2 com x -0.092 ref -0.092 vx -0.001 | ax cmd +0.15 sol -0.02 | pitch -0.017 rate -0.011 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 170 174
+  [land] t+2.97 nc=2 com x -0.092 ref -0.092 vx -0.001 | ax cmd +0.15 sol -0.02 | pitch -0.017 rate -0.011 | sole x -0.063 -0.067 cop x -0.032 -0.022 fz 170 174
+  [land] t+2.99 nc=2 com x -0.092 ref -0.092 vx -0.001 | ax cmd +0.16 sol -0.02 | pitch -0.017 rate -0.010 | sole x -0.063 -0.068 cop x -0.032 -0.022 fz 170 174
+  t= 5.520 nc=2 com=(-0.092,+0.007,+0.6848) vz=-0.001 roll=-0.002 pitch=-0.017 status=Optimal
+  t= 5.600 nc=2 com=(-0.092,+0.007,+0.6847) vz=-0.000 roll=-0.002 pitch=-0.018 status=Optimal
+  t= 5.680 nc=2 com=(-0.092,+0.007,+0.6847) vz=-0.000 roll=-0.002 pitch=-0.018 status=Optimal
+  t= 5.760 nc=2 com=(-0.092,+0.007,+0.6847) vz=-0.000 roll=-0.002 pitch=-0.019 status=Optimal
+  t= 5.840 nc=2 com=(-0.092,+0.007,+0.6847) vz=-0.000 roll=-0.003 pitch=-0.019 status=Optimal
+  t= 5.920 nc=2 com=(-0.092,+0.007,+0.6846) vz=-0.000 roll=-0.003 pitch=-0.019 status=Optimal
+  t= 6.000 nc=2 com=(-0.092,+0.007,+0.6846) vz=-0.000 roll=-0.003 pitch=-0.019 status=Optimal
+  t= 6.080 nc=2 com=(-0.092,+0.007,+0.6846) vz=-0.000 roll=-0.003 pitch=-0.019 status=Optimal
+  t= 6.160 nc=2 com=(-0.092,+0.007,+0.6846) vz=-0.000 roll=-0.003 pitch=-0.019 status=Optimal
+  t= 6.240 nc=2 com=(-0.092,+0.007,+0.6846) vz=-0.000 roll=-0.003 pitch=-0.019 status=Optimal
+  t= 6.320 nc=2 com=(-0.092,+0.007,+0.6846) vz=-0.000 roll=-0.004 pitch=-0.019 status=Optimal
+  t= 6.400 nc=2 com=(-0.092,+0.007,+0.6846) vz=-0.000 roll=-0.004 pitch=-0.019 status=Optimal
+  t= 6.480 nc=2 com=(-0.092,+0.007,+0.6846) vz=-0.000 roll=-0.004 pitch=-0.019 status=Optimal
+  t= 6.560 nc=2 com=(-0.092,+0.007,+0.6846) vz=-0.000 roll=-0.004 pitch=-0.019 status=Optimal
+  t= 6.640 nc=2 com=(-0.092,+0.007,+0.6846) vz=-0.000 roll=-0.004 pitch=-0.019 status=Optimal
+  t= 6.720 nc=2 com=(-0.092,+0.007,+0.6846) vz=+0.000 roll=-0.004 pitch=-0.019 status=Optimal
+  t= 6.800 nc=2 com=(-0.092,+0.007,+0.6846) vz=+0.000 roll=-0.004 pitch=-0.019 status=Optimal
+  t= 6.880 nc=2 com=(-0.092,+0.007,+0.6846) vz=+0.000 roll=-0.004 pitch=-0.019 status=Optimal
+  t= 6.960 nc=2 com=(-0.092,+0.007,+0.6846) vz=+0.000 roll=-0.005 pitch=-0.019 status=Optimal
+
+=== Flight probe ===
+  flight spans: ["2.300-2.528 (0.228 s)"]
+  flight ticks: 112, non-optimal solves in flight: 0
+  max |predicted CoM accel - g| in flight: 0.0000 m/s^2  (QP base dynamics ballistic if ~0)
+  max |measured CoM accel - g| in flight:  0.1092 m/s^2
+  max |predicted d(h_ang)/dt| in flight:   0.0000 N*m  (conservation if ~0)
+  max |h_ang - h_ang(lift-off)| measured:  0.0040 kg*m^2/s
+  max torque-box use in flight: 0.19
+  max tilt after touchdown: 0.542 rad, min CoM z after touchdown 0.679 (stand 0.685)
+  first touchdown vz -0.911 m/s, peak GRF in the first 1 s 7.54 x weight, peak torque-box use 1.00
+  degraded solves (all): 0
+  landing steps: 0
+  verdict: LANDED
