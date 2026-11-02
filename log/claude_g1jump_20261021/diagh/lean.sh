@@ -1,0 +1,11 @@
+#!/bin/bash
+# H8L で押しの前に重心を前へ（JUMP_LEAN）: 押しの前半は CoP が踵の縁に張り付き、重心と踵の距離 7.5 cm で前の加速が頭打ち（2026-11-02、j26、1 本ずつ）。
+cd /home/takara/work/dp/articara
+source ./setup-mujoco.sh >/dev/null
+D=log/claude_g1jump_20261021; O=$D/diagh
+common="ROBOT=g1 WBC_STRATEGY=weighted T=7 FLIGHT_FEET=1 LAND_ABSORB=1 LAND_T=0.20 JUMP_RELEASE=1 MOM_TASK=1 CROUCH=0.18 JUMP_Z_TO=0.0 INIT_SEED=1 INIT_JITTER=0.01 MU_GROUND=0.7 T_LAUNCH=1.2 PLANT_MASS_SCALE=1.0 JUMP_ABORT=1 JUMP_PUSH_R=0.3 QD_CLAMP=40 DIAG_TD=1 FLIGHT_FEET_FLAT=1 DIAG_HX=1 RELEASE_FIRST_OFF=1 WBCW_CONTACT_REST=0.1 WBCW_TRUNK_LAND=0.03 FALL_TILT=1.5 LAND_REF_FOLLOW=2 AIR_ABORT_T=0.08 FLIGHT_FEET_CAPTURE=1 FLIGHT_FEET_CAPTURE_T=0.06 KP_FLIGHT_FEET=1000 KD_FLIGHT_FEET=63 DIAG_PUSHX=1 WBCW_TRUNK_PUSH=0.003 WBCW_MOMENTUM=10 WBCW_CONTACT=100 WBCW_TRUNK_LAND_VZ=0"
+for v in 1.5 2.0; do for vx in 0.8 1.2; do for ln in 0 0.03 0.06; do
+  env $common JUMP_V=$v JUMP_VX=$vx JUMP_LEAN=$ln $D/g1_flight_probe_j26 > $O/ln_V${v}_vx${vx}_l${ln}.log 2>&1 &
+done; done; done
+wait
+echo "#### LEAN_DONE"

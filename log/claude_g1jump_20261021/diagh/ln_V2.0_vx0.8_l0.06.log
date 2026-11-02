@@ -1,0 +1,141 @@
+robot: g1_23dof
+collision: dropped 21 mesh geoms, kept 12 primitives (visual meshes untouched)
+rig check: freejoint=true  ground_plane=true
+centroidal model: nv=29 na=23 mass_links=29 total_mass=34.134 kg  dt=0.001
+  torque limits (QP box == MuJoCo forcerange, from URDF effort): [25.0, 35.0, 88.0, 139.0] N*m over 23 joints
+  burn-in t=0: foot z=0.0360 (sole +0.0010 vs floor), contacts=4
+      contact                        WORLD <-> left_ankle_roll_link         |f|=9.4 N
+      contact                        WORLD <-> left_ankle_roll_link         |f|=28.8 N
+      contact                        WORLD <-> right_ankle_roll_link        |f|=31.5 N
+      contact                        WORLD <-> right_ankle_roll_link        |f|=22.6 N
+  burn-in end: foot z=0.0359 (sole +0.0009), contacts=4, sum fz=92.3 N (weight 334.9 N)
+settled (base welded) for 1.2s: max joint move from seed = 0.0032 rad  (right_knee_joint)
+actuation: mode=torque kp=0 kv=0
+post-burn-in: rpy=(+0.000,-0.002,+0.008) hip_roll=(-0.008,+0.006) foot inner-gap=+0.1965
+flight probe: m=34.13 kg, launch 1.00 m/s over 0.100 s at t=1.20, F_ON 16.7 N, ctrl 500 Hz
+  t= 0.000 nc=2 com=(+0.038,+0.000,+0.6851) vz=+0.004 roll=+0.000 pitch=-0.002 status=Optimal
+  t= 0.080 nc=2 com=(+0.038,+0.000,+0.6851) vz=-0.000 roll=+0.000 pitch=-0.002 status=Optimal
+  t= 0.160 nc=2 com=(+0.038,+0.000,+0.6851) vz=+0.000 roll=+0.000 pitch=-0.002 status=Optimal
+  t= 0.240 nc=2 com=(+0.038,+0.000,+0.6851) vz=+0.000 roll=+0.000 pitch=-0.001 status=Optimal
+  t= 0.320 nc=2 com=(+0.038,+0.000,+0.6851) vz=+0.000 roll=+0.000 pitch=-0.001 status=Optimal
+  t= 0.400 nc=2 com=(+0.038,+0.000,+0.6851) vz=+0.000 roll=+0.000 pitch=-0.001 status=Optimal
+  t= 0.480 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 0.560 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 0.640 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 0.720 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 0.800 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 0.880 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 0.960 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 1.040 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 1.120 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 1.200 nc=2 com=(+0.038,+0.000,+0.6852) vz=+0.000 roll=+0.000 pitch=-0.000 status=Optimal
+  t= 1.280 nc=2 com=(+0.039,+0.000,+0.6841) vz=-0.040 roll=-0.000 pitch=+0.001 status=Optimal
+  t= 1.360 nc=2 com=(+0.042,+0.000,+0.6771) vz=-0.140 roll=-0.000 pitch=+0.003 status=Optimal
+  t= 1.440 nc=2 com=(+0.049,+0.000,+0.6611) vz=-0.258 roll=-0.000 pitch=+0.007 status=Optimal
+  t= 1.520 nc=2 com=(+0.058,+0.000,+0.6364) vz=-0.350 roll=-0.000 pitch=+0.008 status=Optimal
+  t= 1.600 nc=2 com=(+0.069,+0.000,+0.6064) vz=-0.389 roll=-0.000 pitch=+0.005 status=Optimal
+  t= 1.680 nc=2 com=(+0.079,+0.000,+0.5759) vz=-0.363 roll=-0.000 pitch=-0.002 status=Optimal
+  t= 1.760 nc=2 com=(+0.087,+0.000,+0.5517) vz=-0.227 roll=-0.000 pitch=+0.000 status=Optimal
+  t= 1.840 nc=2 com=(+0.087,+0.000,+0.5388) vz=-0.104 roll=+0.000 pitch=+0.030 status=Optimal
+  t= 1.920 nc=2 com=(+0.081,-0.000,+0.5350) vz=+0.005 roll=+0.000 pitch=+0.056 status=Optimal
+  t= 2.000 nc=2 com=(+0.072,-0.000,+0.5367) vz=+0.016 roll=+0.000 pitch=+0.060 status=Optimal
+  t= 2.080 nc=2 com=(+0.067,-0.000,+0.5372) vz=-0.000 roll=-0.000 pitch=+0.045 status=Optimal
+  t= 2.160 nc=2 com=(+0.064,-0.000,+0.5369) vz=-0.005 roll=-0.000 pitch=+0.032 status=Optimal
+  t= 2.240 nc=2 com=(+0.063,-0.000,+0.5365) vz=-0.005 roll=-0.000 pitch=+0.025 status=Optimal
+  [pushx] t=2.280 PSH ref x +0.098 vx +0.000 ax +0.00 | com x +0.063 vx -0.000 | ax cmd +10.71 sol +1.08 qpF +13.85 plant +1.11 | contact acc x/z [+6.07/-17.88 +6.26/-17.91] | pitch +0.023 rate -0.03 | cop x +0.006 +0.008 fz 170 165
+  [pushx] t=2.300 PSH ref x +0.098 vx +0.000 ax +8.06 | com x +0.063 vx +0.001 | ax cmd +18.65 sol +3.83 qpF +49.00 plant +0.83 | contact acc x/z [-0.24/+0.03 -0.19/+0.02] | pitch +0.023 rate -0.02 | cop x +0.008 +0.009 fz 170 166
+  [pushx] t=2.320 PSH ref x +0.100 vx +0.154 ax +7.33 | com x +0.063 vx +0.053 | ax cmd +26.42 sol +4.10 qpF +51.88 plant +39.36 | contact acc x/z [+0.39/+0.39 +0.44/+0.38] | pitch +0.016 rate -0.67 | cop x -0.066 -0.066 fz 381 380
+  t= 2.320 nc=2 com=(+0.063,-0.000,+0.5388) vz=+0.249 roll=-0.000 pitch=+0.016 status=Optimal
+  [pushx] t=2.340 PSH ref x +0.105 vx +0.293 ax +6.59 | com x +0.065 vx +0.120 | ax cmd +32.25 sol +3.59 qpF +43.97 plant +42.73 | contact acc x/z [+0.92/-0.06 +0.97/-0.08] | pitch -0.005 rate -1.43 | cop x -0.075 -0.075 fz 357 357
+  [pushx] t=2.360 PSH ref x +0.112 vx +0.417 ax +5.85 | com x +0.068 vx +0.177 | ax cmd +38.13 sol +2.59 qpF +30.13 plant +27.41 | contact acc x/z [+1.29/-0.44 +1.25/-0.34] | pitch -0.042 rate -2.18 | cop x -0.050 -0.049 fz 336 336
+  [pushx] t=2.380 PSH ref x +0.121 vx +0.527 ax +5.11 | com x +0.072 vx +0.211 | ax cmd +45.06 sol +1.98 qpF +21.72 plant -21.66 | contact acc x/z [+1.61/+1.58 +1.62/-0.43] | pitch -0.093 rate -2.83 | cop x -0.023 +0.085 fz 317 142
+  [pushx] t=2.400 PSH ref x +0.133 vx +0.622 ax +4.37 | com x +0.077 vx +0.231 | ax cmd +52.40 sol +0.20 qpF +2.10 plant -16.56 | contact acc x/z [+2.34/-0.87 +1.71/-1.34] | pitch -0.155 rate -3.38 | cop x +0.085 +0.029 fz 165 252
+  t= 2.400 nc=2 com=(+0.077,-0.000,+0.5928) vz=+0.989 roll=-0.000 pitch=-0.155 status=Optimal
+  [pushx] t=2.420 PSH ref x +0.146 vx +0.701 ax +3.63 | com x +0.081 vx +0.219 | ax cmd +61.66 sol -0.58 qpF -5.73 plant -9.08 | contact acc x/z [+2.46/-2.49 +2.36/-1.45] | pitch -0.227 rate -3.79 | cop x +0.085 +0.085 fz 170 176
+  [pushx] t=2.440 PSH ref x +0.161 vx +0.767 ax +2.89 | com x +0.085 vx +0.207 | ax cmd +70.18 sol -0.07 qpF -0.68 plant -3.76 | contact acc x/z [+2.23/-2.32 +3.06/-2.03] | pitch -0.307 rate -4.15 | cop x +0.085 +0.085 fz 90 64
+  [release] t=2.454 after 0.000 s (one foot unloaded: fz 0 965)
+  [lift-off] t=2.456 com (+0.089, z 0.6482) v (+0.215, +0.925), foot x ["+0.010", "+0.014"] z ["+0.037", "+0.033"], h_ang (+0.041,+0.350,-0.012), roll +0.000 pitch -0.372
+  [hx] lift-off h_x +0.041 | base +0.971 Lleg -0.999 Rleg +0.160 waist -0.055 arms -0.035
+  [hx] crouch  dt 0.800 dh_x +0.006 ground +0.013 = fzdiff +0.123 cop -0.120 com +0.024 fy*h -0.014 | mean fzL-fzR +1.3
+  [hx] hold    dt 0.300 dh_x -0.003 ground -0.007 = fzdiff +0.231 cop -0.297 com +0.053 fy*h +0.006 | mean fzL-fzR +6.6
+  [hx] push    dt 0.156 dh_x +0.038 ground +0.083 = fzdiff -0.120 cop +0.116 com +0.052 fy*h +0.035 | mean fzL-fzR -6.7
+  [hx] release dt 0.000 dh_x NaN ground +0.000 = fzdiff +0.000 cop +0.000 com +0.000 fy*h +0.000 | mean fzL-fzR +0.0
+  [hx] loaded  dt 0.000 dh_x NaN ground +0.000 = fzdiff +0.000 cop +0.000 com +0.000 fy*h +0.000 | mean fzL-fzR +0.0
+  [td-foot] R first load t=2.458 | L sole z +0.0026 roll -0.015 pitch +0.008 fz 0 | R sole z -0.0023 roll -0.054 pitch -0.040 fz 29
+  [pushx] t=2.460 AIR ref x +0.170 vx +0.800 ax +0.00 | com x +0.090 vx +0.214 | ax cmd +72.00 sol -0.00 qpF -0.00 plant -2.74 | contact acc x/z [] | pitch -0.385 rate -2.87 | cop x +0.000 -0.085 fz 0 21
+  [airborne] t=2.462 both feet unloaded: h_ang (+0.063,+0.422,-0.025) com vz +0.869
+  [pushx] t=2.480 AIR ref x +0.170 vx +0.800 ax +0.00 | com x +0.094 vx +0.212 | ax cmd +72.00 sol -0.00 qpF -0.00 plant -0.01 | contact acc x/z [] | pitch -0.416 rate -0.53 | cop x +0.000 -0.085 fz 0 0
+  t= 2.480 nc=0 com=(+0.094,-0.000,+0.6675) vz=+0.693 roll=+0.002 pitch=-0.416 status=Optimal
+  t= 2.560 nc=0 com=(+0.111,+0.000,+0.6912) vz=-0.090 roll=-0.008 pitch=-0.287 status=Optimal
+  [touchdown] t=2.582 after 0.126 s, com (+0.115, z 0.6868) v (+0.210, -0.305), foot x ["+0.085", "+0.085"], feet [false, true]
+  [td-foot] L first load t=2.620 | L sole z +0.0005 roll +0.003 pitch -0.017 fz 48 | R sole z -0.0020 roll -0.105 pitch +0.070 fz 294
+  t= 2.640 nc=2 com=(+0.127,+0.003,+0.6750) vz=-0.156 roll=-0.013 pitch=-0.158 status=Optimal
+  t= 2.720 nc=2 com=(+0.138,+0.004,+0.6636) vz=-0.106 roll=-0.015 pitch=-0.146 status=Optimal
+  t= 2.800 nc=2 com=(+0.141,+0.004,+0.6584) vz=-0.055 roll=-0.015 pitch=-0.176 status=Optimal
+  t= 2.880 nc=2 com=(+0.138,+0.003,+0.6557) vz=-0.025 roll=-0.016 pitch=-0.212 status=Optimal
+  t= 2.960 nc=2 com=(+0.131,+0.005,+0.6539) vz=-0.033 roll=-0.019 pitch=-0.239 status=Optimal
+  t= 3.040 nc=2 com=(+0.125,+0.006,+0.6513) vz=-0.029 roll=-0.020 pitch=-0.267 status=Optimal
+  t= 3.120 nc=2 com=(+0.120,+0.006,+0.6506) vz=+0.040 roll=-0.016 pitch=-0.283 status=Optimal
+  t= 3.200 nc=2 com=(+0.117,+0.006,+0.6537) vz=+0.039 roll=-0.011 pitch=-0.247 status=Optimal
+  t= 3.280 nc=2 com=(+0.117,+0.006,+0.6556) vz=+0.019 roll=-0.020 pitch=-0.211 status=Optimal
+  t= 3.360 nc=1 com=(+0.123,+0.007,+0.6582) vz=+0.046 roll=+0.004 pitch=-0.183 status=Optimal
+  t= 3.440 nc=2 com=(+0.129,+0.002,+0.6620) vz=+0.046 roll=+0.015 pitch=-0.151 status=Optimal
+  t= 3.520 nc=2 com=(+0.133,-0.001,+0.6659) vz=+0.070 roll=+0.006 pitch=-0.131 status=Optimal
+  t= 3.600 nc=2 com=(+0.136,-0.002,+0.6699) vz=+0.060 roll=+0.004 pitch=-0.115 status=Optimal
+  t= 3.680 nc=2 com=(+0.139,-0.004,+0.6741) vz=+0.034 roll=-0.000 pitch=-0.100 status=Optimal
+  t= 3.760 nc=2 com=(+0.141,-0.004,+0.6777) vz=+0.048 roll=-0.003 pitch=-0.086 status=Optimal
+  t= 3.840 nc=2 com=(+0.143,-0.005,+0.6805) vz=+0.014 roll=-0.004 pitch=-0.073 status=Optimal
+  t= 3.920 nc=2 com=(+0.145,-0.005,+0.6824) vz=+0.017 roll=-0.005 pitch=-0.062 status=Optimal
+  t= 4.000 nc=2 com=(+0.146,-0.005,+0.6834) vz=+0.008 roll=-0.006 pitch=-0.052 status=Optimal
+  t= 4.080 nc=2 com=(+0.147,-0.005,+0.6838) vz=+0.003 roll=-0.006 pitch=-0.043 status=Optimal
+  t= 4.160 nc=2 com=(+0.148,-0.005,+0.6840) vz=+0.002 roll=-0.007 pitch=-0.036 status=Optimal
+  t= 4.240 nc=2 com=(+0.148,-0.005,+0.6842) vz=+0.002 roll=-0.007 pitch=-0.030 status=Optimal
+  t= 4.320 nc=2 com=(+0.149,-0.005,+0.6843) vz=+0.002 roll=-0.007 pitch=-0.025 status=Optimal
+  t= 4.400 nc=2 com=(+0.149,-0.005,+0.6845) vz=+0.002 roll=-0.007 pitch=-0.021 status=Optimal
+  t= 4.480 nc=2 com=(+0.150,-0.005,+0.6846) vz=+0.001 roll=-0.007 pitch=-0.018 status=Optimal
+  t= 4.560 nc=2 com=(+0.150,-0.005,+0.6847) vz=+0.001 roll=-0.007 pitch=-0.015 status=Optimal
+  t= 4.640 nc=2 com=(+0.150,-0.005,+0.6848) vz=+0.001 roll=-0.008 pitch=-0.013 status=Optimal
+  t= 4.720 nc=2 com=(+0.150,-0.005,+0.6848) vz=+0.001 roll=-0.008 pitch=-0.012 status=Optimal
+  t= 4.800 nc=2 com=(+0.151,-0.005,+0.6849) vz=+0.001 roll=-0.008 pitch=-0.010 status=Optimal
+  t= 4.880 nc=2 com=(+0.151,-0.005,+0.6850) vz=+0.001 roll=-0.008 pitch=-0.009 status=Optimal
+  t= 4.960 nc=2 com=(+0.151,-0.005,+0.6850) vz=+0.001 roll=-0.008 pitch=-0.008 status=Optimal
+  t= 5.040 nc=2 com=(+0.151,-0.005,+0.6850) vz=+0.000 roll=-0.008 pitch=-0.007 status=Optimal
+  t= 5.120 nc=2 com=(+0.151,-0.005,+0.6851) vz=+0.000 roll=-0.008 pitch=-0.006 status=Optimal
+  t= 5.200 nc=2 com=(+0.151,-0.005,+0.6851) vz=+0.000 roll=-0.008 pitch=-0.005 status=Optimal
+  t= 5.280 nc=2 com=(+0.151,-0.005,+0.6851) vz=+0.000 roll=-0.008 pitch=-0.005 status=Optimal
+  t= 5.360 nc=2 com=(+0.151,-0.005,+0.6851) vz=+0.000 roll=-0.008 pitch=-0.004 status=Optimal
+  t= 5.440 nc=2 com=(+0.151,-0.005,+0.6852) vz=+0.000 roll=-0.008 pitch=-0.004 status=Optimal
+  t= 5.520 nc=2 com=(+0.151,-0.005,+0.6852) vz=+0.000 roll=-0.008 pitch=-0.003 status=Optimal
+  t= 5.600 nc=2 com=(+0.151,-0.005,+0.6852) vz=+0.000 roll=-0.008 pitch=-0.003 status=Optimal
+  t= 5.680 nc=2 com=(+0.151,-0.005,+0.6852) vz=+0.000 roll=-0.009 pitch=-0.003 status=Optimal
+  t= 5.760 nc=2 com=(+0.151,-0.005,+0.6852) vz=+0.000 roll=-0.009 pitch=-0.002 status=Optimal
+  t= 5.840 nc=2 com=(+0.151,-0.005,+0.6852) vz=+0.000 roll=-0.009 pitch=-0.002 status=Optimal
+  t= 5.920 nc=2 com=(+0.152,-0.005,+0.6852) vz=+0.000 roll=-0.009 pitch=-0.002 status=Optimal
+  t= 6.000 nc=2 com=(+0.152,-0.005,+0.6852) vz=+0.000 roll=-0.009 pitch=-0.001 status=Optimal
+  t= 6.080 nc=2 com=(+0.152,-0.005,+0.6852) vz=+0.000 roll=-0.009 pitch=-0.001 status=Optimal
+  t= 6.160 nc=2 com=(+0.152,-0.005,+0.6852) vz=+0.000 roll=-0.009 pitch=-0.001 status=Optimal
+  t= 6.240 nc=2 com=(+0.152,-0.005,+0.6852) vz=+0.000 roll=-0.009 pitch=-0.001 status=Optimal
+  t= 6.320 nc=2 com=(+0.152,-0.005,+0.6852) vz=+0.000 roll=-0.009 pitch=-0.000 status=Optimal
+  t= 6.400 nc=2 com=(+0.152,-0.005,+0.6852) vz=+0.000 roll=-0.009 pitch=-0.000 status=Optimal
+  t= 6.480 nc=2 com=(+0.152,-0.005,+0.6852) vz=+0.000 roll=-0.009 pitch=-0.000 status=Optimal
+  t= 6.560 nc=2 com=(+0.152,-0.005,+0.6852) vz=+0.000 roll=-0.009 pitch=+0.000 status=Optimal
+  t= 6.640 nc=2 com=(+0.152,-0.005,+0.6852) vz=+0.000 roll=-0.009 pitch=+0.000 status=Optimal
+  t= 6.720 nc=2 com=(+0.152,-0.005,+0.6853) vz=+0.000 roll=-0.009 pitch=+0.000 status=Optimal
+  t= 6.800 nc=2 com=(+0.152,-0.005,+0.6853) vz=+0.000 roll=-0.009 pitch=+0.001 status=Optimal
+  t= 6.880 nc=2 com=(+0.152,-0.005,+0.6853) vz=+0.000 roll=-0.009 pitch=+0.001 status=Optimal
+  t= 6.960 nc=2 com=(+0.152,-0.005,+0.6853) vz=+0.000 roll=-0.009 pitch=+0.001 status=Optimal
+
+=== Flight probe ===
+  flight spans: ["2.456-2.582 (0.126 s)"]
+  flight ticks: 44, non-optimal solves in flight: 0
+  max |predicted CoM accel - g| in flight: 0.0000 m/s^2  (QP base dynamics ballistic if ~0)
+  max |measured CoM accel - g| in flight:  78.1017 m/s^2
+  max |predicted d(h_ang)/dt| in flight:   0.0000 N*m  (conservation if ~0)
+  max |h_ang - h_ang(lift-off)| measured:  0.0217 kg*m^2/s
+  max torque-box use in flight: 0.55
+  forward: lift-off vx +0.215, touchdown CoM dx +0.077, final CoM dx +0.113 m
+  max tilt after touchdown: 0.286 rad, min CoM z after touchdown 0.650 (stand 0.685)
+  first touchdown vz -0.305 m/s, peak GRF in the first 1 s 2.61 x weight, peak torque-box use 1.00
+  degraded solves (all): 0
+  landing steps: 0
+  verdict: LANDED

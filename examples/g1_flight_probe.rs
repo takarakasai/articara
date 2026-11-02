@@ -236,6 +236,15 @@ fn main() {
     let kp_trunk_land = env_f64("KP_TRUNK_LAND", kp_trunk);
     let kd_trunk_land = env_f64("KD_TRUNK_LAND", kd_trunk);
     let mut diag_com_cmd: Option<(na::Vector3<f64>, na::Vector3<f64>)> = None; // (ref, a_cmd)
+    // DIAG_PUSHX=1: from the push start to 30 ms after the push ends, every
+    // 10 ms: the CoM x reference (position, velocity, acceleration) against
+    // the CoM, and the x acceleration at four stages -- the CoM task's
+    // command, the QP's solved CoM acceleration (J qdd + dJ v), the QP's own
+    // contact forces (sum f_x / m), and the plant's measured forces -- plus
+    // the QP's planned contact acceleration (the soft contact's leak), trunk
+    // pitch and rate, and CoP x per foot. Where the take-off vx goes missing.
+    let diag_pushx = flag("DIAG_PUSHX", false);
+    let mut diag_com_vref: Option<(na::Vector3<f64>, na::Vector3<f64>)> = None; // (vel ref, acc ref)
     let mut air_sched = false;
     let mut left_ground = false;
     let f_on = env_f64("F_ON", 0.05 * weight);
@@ -896,6 +905,7 @@ fn main() {
             }
             let a_com = cdd_ref + kd_com * (cd_ref - com_vel) + kp_com * (c_ref - com);
             diag_com_cmd = Some((c_ref, a_com));
+            diag_com_vref = Some((cd_ref, cdd_ref));
             levels.push(bt::com(dyn_ctx.qddot(), &st.j_com, &st.djv_com, &a_com));
             names.push("com");
         }
@@ -1112,6 +1122,27 @@ fn main() {
                 "  [land] t+{:.2} nc={nc} com x {:+.3} ref {:+.3} vx {:+.3} | ax cmd {:+.2} sol {:+.2} | pitch {:+.3} rate {:+.3} | sole x {:+.3} {:+.3} cop x {:+.3} {:+.3} fz {:.0} {:.0}",
                 t - t0, com.x, cr.x, com_vel.x, ac.x, a_sol[0], pitch, st.v_ang_w[1],
                 feet_x[0], feet_x[1], measured.cop[0][0], measured.cop[1][0], measured.cop[0][2], measured.cop[1][2]
+            );
+        }
+
+        if diag_pushx && jump_v > 0.0 && tick % 10 == 0 && t >= t_launch + jump_t_crouch + jump_t_hold - 0.02
+            && push_end.is_none_or(|te| t <= te + 0.03)
+        {
+            let a_sol = &st.j_com * &ex.qddot + st.djv_com;
+            let (cr, ac) = diag_com_cmd.unwrap_or((com, na::Vector3::zeros()));
+            let (vr, ar) = diag_com_vref.unwrap_or((na::Vector3::zeros(), na::Vector3::zeros()));
+            let m = total_mass;
+            let nfc = ex.forces.len() / 6;
+            let fx_qp: f64 = (0..nfc).map(|i| ex.forces[6 * i + 3]).sum();
+            let fx_mj = measured.f_w[0][0] + measured.f_w[1][0];
+            let acc_c = if nfc > 0 { &j_contact * &ex.qddot + &dj_v } else { na::DVector::zeros(0) };
+            let leak: Vec<String> = (0..nfc).map(|i| format!("{:+.2}/{:+.2}", acc_c[6 * i + 3], acc_c[6 * i + 5])).collect();
+            println!(
+                "  [pushx] t={t:.3} {} ref x {:+.3} vx {:+.3} ax {:+.2} | com x {:+.3} vx {:+.3} | ax cmd {:+.2} sol {:+.2} qpF {:+.2} plant {:+.2} | contact acc x/z [{}] | pitch {:+.3} rate {:+.2} | cop x {:+.3} {:+.3} fz {:.0} {:.0}",
+                if flight { "AIR" } else if release_t0.is_some() { "REL" } else { "PSH" },
+                cr.x, vr.x, ar.x, com.x, com_vel.x, ac.x, a_sol[0], fx_qp / m, fx_mj / m,
+                leak.join(" "), pitch, st.v_ang_w[1],
+                measured.cop[0][0], measured.cop[1][0], measured.cop[0][2], measured.cop[1][2]
             );
         }
 
