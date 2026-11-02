@@ -171,6 +171,13 @@ fn main() {
     let jump_t_crouch = env_f64("JUMP_T_CROUCH", 0.8).max(0.05);
     let jump_t_hold = env_f64("JUMP_T_HOLD", 0.3).max(0.0);
     let jump_z_to = env_f64("JUMP_Z_TO", 0.02);
+    // JUMP_VX (m/s, 0 = off): a forward jump. The push runs along a line
+    // tilted forward -- the CoM's x acceleration is JUMP_VX / JUMP_V times
+    // the vertical one, so it leaves with (JUMP_VX, JUMP_V) -- and the
+    // release keeps x ballistic. JUMP_LEAN (m, 0 = off): shift the CoM by
+    // this much in x during the crouch (quintic over JUMP_T_CROUCH).
+    let jump_vx = env_f64("JUMP_VX", 0.0);
+    let jump_lean = env_f64("JUMP_LEAN", 0.0);
     let mut push_end: Option<f64> = None;
     // JUMP_RELEASE=1: after the push reaches JUMP_V, command the CoM to fall
     // at g (zero ground force) with the contact rows still in, and enter
@@ -321,6 +328,13 @@ fn main() {
     let kp_ff = env_f64("KP_FLIGHT_FEET", 400.0);
     let kd_ff = env_f64("KD_FLIGHT_FEET", 40.0);
     let flight_feet_flat = flag("FLIGHT_FEET_FLAT", false);
+    // FLIGHT_FEET_CAPTURE=k (0 = off): in flight, carry both sole centres
+    // from their lift-off offset to k * vx / omega ahead of the CoM (the
+    // stopping point of a LIPM at the stand height), smoothstep over
+    // FLIGHT_FEET_CAPTURE_T s from lift-off. For a forward jump the feet
+    // leave behind the CoM; landing there pitches the body forward.
+    let flight_feet_capture = env_f64("FLIGHT_FEET_CAPTURE", 0.0);
+    let flight_feet_capture_t = env_f64("FLIGHT_FEET_CAPTURE_T", 0.12).max(1e-3);
     let flight_feet_level = flag("FLIGHT_FEET_LEVEL", false);
     // FOOT_RESEAT=1: on the ground after the first touchdown, a foot that is
     // out of the contact set (and not the landing step's swing foot) gets a
@@ -383,6 +397,9 @@ fn main() {
     let mut fell = false;
     let fall_tilt = env_f64("FALL_TILT", 0.52);
     let mut max_tilt_after = 0.0_f64;
+    // forward jump summary: CoM x at T_LAUNCH, first lift-off vx, first
+    // touchdown CoM x, last CoM x
+    let (mut fwd_x0, mut fwd_lo_vx, mut fwd_td_x, mut fwd_last_x) = (None::<f64>, None::<f64>, None::<f64>, 0.0_f64);
 
     for tick in 0..n_ticks {
         let t = tick as f64 * dt;
@@ -391,6 +408,10 @@ fn main() {
         let com = st.com;
         let com_vel = st.com_vel;
         let stand_z = *stand_z.get_or_insert(com.z);
+        if t >= t_launch {
+            fwd_x0.get_or_insert(com.x);
+        }
+        fwd_last_x = com.x;
 
         if jump_v <= 0.0 && !launched && t >= t_launch {
             launched = true;
@@ -528,6 +549,7 @@ fn main() {
         match (flight, flight_t0) {
             (true, None) => {
                 flight_t0 = Some(t);
+                fwd_lo_vx.get_or_insert(com_vel.x);
                 h_ang0 = None;
                 feet_off = Some(std::array::from_fn(|k| misarta::se3::translation(&data.oMi[feet[k]]) - com));
                 // FLIGHT_FEET_LEVEL=1: hold both feet at the LOWER foot's
@@ -551,6 +573,7 @@ fn main() {
                 flight_t0 = None;
                 if touchdown_t.is_none() {
                     td_vz = com_vel.z;
+                    fwd_td_x = Some(com.x);
                 }
                 touchdown_t.get_or_insert(t);
                 com_ref = Some(na::Vector3::new(com.x, com.y, stand_z));
@@ -795,6 +818,8 @@ fn main() {
                     let z_low = stand_z - crouch;
                     let s = t - t_launch;
                     let (mut z, mut vz, mut az) = quintic(stand_z, 0.0, z_low, jump_t_crouch, s);
+                    let (mut x, mut vx, mut ax) = quintic(0.0, 0.0, jump_lean, jump_t_crouch, s);
+                    let kx = jump_vx / jump_v;
                     let s_push = s - jump_t_crouch - jump_t_hold;
                     if s_push > 0.0 {
                         let dz = stand_z + jump_z_to - z_low;
@@ -817,12 +842,18 @@ fn main() {
                             az = a;
                             (jump_v / a, a)
                         };
+                        x += kx * (z - z_low);
+                        vx += kx * vz;
+                        ax += kx * az;
                         if s_push >= t_push && jump_release {
                             let (t0, z0, v0) = *release_t0.get_or_insert((t, z, vz));
                             let sr = t - t0;
                             z = z0 + v0 * sr - 0.5 * G * sr * sr;
                             vz = v0 - G * sr;
                             az = -G;
+                            x = jump_lean + kx * (z0 - z_low) + kx * v0 * sr;
+                            vx = kx * v0;
+                            ax = 0.0;
                             let unloaded = measured.cop[0][2] <= f_on && measured.cop[1][2] <= f_on;
                             let one_off = release_first_off && !unloaded && (measured.cop[0][2] <= f_on || measured.cop[1][2] <= f_on);
                             if one_off {
@@ -847,7 +878,7 @@ fn main() {
                             println!("  [take-off] t={t:.3} scheduled flight: com z {:.4} vz {:+.3} (ref {:.4} {:+.3}), push {t_push:.3} s at {a:.2} m/s^2", com.z, com_vel.z, z, vz);
                         }
                     }
-                    (na::Vector3::new(c_ref.x, c_ref.y, z), na::Vector3::new(0.0, 0.0, vz), na::Vector3::new(0.0, 0.0, az))
+                    (na::Vector3::new(c_ref.x + x, c_ref.y, z), na::Vector3::new(vx, 0.0, vz), na::Vector3::new(ax, 0.0, az))
                 }
                 None => (c_ref, na::Vector3::zeros(), na::Vector3::zeros()),
             };
@@ -921,7 +952,16 @@ fn main() {
             levels.push(misa_wbc::Task::equality(na::DMatrix::from_rows(&[a]), na::DVector::from_vec(vec![b])));
             names.push("fz sym");
         }
-        if flight && flight_feet && let Some(off) = feet_off {
+        if flight && flight_feet && let Some(mut off) = feet_off {
+            if flight_feet_capture > 0.0 && let Some(t0f) = flight_t0 {
+                let h = (stand_z - (fz_stand[0].min(fz_stand[1]) - prof.sole_below_origin)).max(0.3);
+                let tgt = flight_feet_capture * com_vel.x / (G / h).sqrt() - prof.sole_centre_x;
+                let b = ((t - t0f) / flight_feet_capture_t).clamp(0.0, 1.0);
+                let b = b * b * (3.0 - 2.0 * b);
+                for o in off.iter_mut() {
+                    o.x += (tgt - o.x) * b;
+                }
+            }
             for k in 0..2 {
                 let jf = misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, feet[k]);
                 let djv = &misarta::jacobian::compute_joint_jacobian_time_derivative(&rig.model, q, v, feet[k]) * v_dvec;
@@ -1222,6 +1262,12 @@ fn main() {
     println!("  max |predicted d(h_ang)/dt| in flight:   {max_dh_pred:.4} N*m  (conservation if ~0)");
     println!("  max |h_ang - h_ang(lift-off)| measured:  {max_h_drift:.4} kg*m^2/s");
     println!("  max torque-box use in flight: {max_tau_use:.2}");
+    if let Some(x0) = fwd_x0 {
+        println!(
+            "  forward: lift-off vx {:+.3}, touchdown CoM dx {:+.3}, final CoM dx {:+.3} m",
+            fwd_lo_vx.unwrap_or(f64::NAN), fwd_td_x.map_or(f64::NAN, |x| x - x0), fwd_last_x - x0
+        );
+    }
     println!("  max tilt after touchdown: {max_tilt_after:.3} rad, min CoM z after touchdown {min_com_z_after:.3} (stand {:.3})", stand_z.unwrap_or(0.0));
     println!("  first touchdown vz {td_vz:+.3} m/s, peak GRF in the first 1 s {:.2} x weight, peak torque-box use {peak_tau_after:.2}", peak_grf_after / weight);
     println!("  degraded solves (all): {}", tally.n);
