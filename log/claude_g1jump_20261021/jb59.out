@@ -1,0 +1,22 @@
+R10L JUMP_V=1.0: 着地 15/48  飛ばず 0  離地速度中央値 0.784  |h_y|中央値 0.31  両足同時着地 0/48
+R10L JUMP_V=1.5: 着地 24/48  飛ばず 0  離地速度中央値 1.203  |h_y|中央値 0.29  両足同時着地 0/48
+R10L JUMP_V=2.0: 着地 39/48  飛ばず 0  離地速度中央値 1.299  |h_y|中央値 0.59  両足同時着地 1/48
+R10LW JUMP_V=1.0: 着地 23/48  飛ばず 0  離地速度中央値 0.784  |h_y|中央値 0.31  両足同時着地 0/48
+R10LW JUMP_V=1.5: 着地 47/48  飛ばず 0  離地速度中央値 1.203  |h_y|中央値 0.29  両足同時着地 0/48
+R10LW JUMP_V=2.0: 着地 46/48  飛ばず 0  離地速度中央値 1.299  |h_y|中央値 0.59  両足同時着地 1/48
+R10W JUMP_V=1.0: 着地 20/48  飛ばず 0  離地速度中央値 0.784  |h_y|中央値 0.31  両足同時着地 0/48
+R10W JUMP_V=1.5: 着地 48/48  飛ばず 0  離地速度中央値 1.203  |h_y|中央値 0.29  両足同時着地 0/48
+R10W JUMP_V=2.0: 着地 46/48  飛ばず 0  離地速度中央値 1.299  |h_y|中央値 0.59  両足同時着地 1/48
+R8TC         v1.0: jumps done 83 of 144 | members by jumps done [2, 22, 11, 13] | max|feet yaw| at re-arm med 0.27 | final dx (standing) med +0.71
+R10L         v1.0: jumps done 86 of 144 | members by jumps done [2, 21, 10, 15] | max|feet yaw| at re-arm med 0.25 | final dx (standing) med +0.70 | vs R8TC +14/-12 z +0.39
+R10W         v1.0: jumps done 99 of 144 | members by jumps done [3, 11, 14, 20] | max|feet yaw| at re-arm med 0.20 | final dx (standing) med +0.76 | vs R8TC +24/-12 z +2.00
+R10LW        v1.0: jumps done 102 of 144 | members by jumps done [3, 11, 11, 23] | max|feet yaw| at re-arm med 0.17 | final dx (standing) med +0.77 | vs R8TC +24/-10 z +2.40
+R8TC         v1.5: jumps done 92 of 144 | members by jumps done [0, 22, 8, 18] | max|feet yaw| at re-arm med 0.30 | final dx (standing) med +0.88
+R10L         v1.5: jumps done 101 of 144 | members by jumps done [0, 19, 5, 24] | max|feet yaw| at re-arm med 0.27 | final dx (standing) med +0.93 | vs R8TC +10/-6 z +1.00
+R10W         v1.5: jumps done 144 of 144 | members by jumps done [0, 0, 0, 48] | max|feet yaw| at re-arm med 0.15 | final dx (standing) med +0.93 | vs R8TC +30/-0 z +5.48
+R10LW        v1.5: jumps done 142 of 144 | members by jumps done [0, 1, 0, 47] | max|feet yaw| at re-arm med 0.12 | final dx (standing) med +0.94 | vs R8TC +30/-1 z +5.21
+R8TC         v2.0: jumps done 123 of 144 | members by jumps done [1, 5, 8, 34] | max|feet yaw| at re-arm med 0.16 | final dx (standing) med +0.92
+R10L         v2.0: jumps done 129 of 144 | members by jumps done [1, 4, 4, 39] | max|feet yaw| at re-arm med 0.17 | final dx (standing) med +0.94 | vs R8TC +11/-5 z +1.50
+R10W         v2.0: jumps done 141 of 144 | members by jumps done [0, 1, 1, 46] | max|feet yaw| at re-arm med 0.11 | final dx (standing) med +0.94 | vs R8TC +14/-2 z +3.00
+R10LW        v2.0: jumps done 141 of 144 | members by jumps done [0, 1, 1, 46] | max|feet yaw| at re-arm med 0.09 | final dx (standing) med +0.92 | vs R8TC +14/-2 z +3.00
+#### JB59_DONE

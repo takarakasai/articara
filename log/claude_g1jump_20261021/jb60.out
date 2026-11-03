@@ -1,0 +1,13 @@
+R8TCs2 JUMP_V=1.0: 着地 7/48  飛ばず 0  離地速度中央値 0.779  |h_y|中央値 0.30  両足同時着地 0/48
+R8TCs2 JUMP_V=1.5: 着地 22/48  飛ばず 0  離地速度中央値 1.201  |h_y|中央値 0.34  両足同時着地 0/48
+R8TCs2 JUMP_V=2.0: 着地 38/48  飛ばず 0  離地速度中央値 1.290  |h_y|中央値 0.59  両足同時着地 0/48
+R10Ws2 JUMP_V=1.0: 着地 23/48  飛ばず 0  離地速度中央値 0.779  |h_y|中央値 0.30  両足同時着地 0/48
+R10Ws2 JUMP_V=1.5: 着地 47/48  飛ばず 0  離地速度中央値 1.201  |h_y|中央値 0.34  両足同時着地 0/48
+R10Ws2 JUMP_V=2.0: 着地 45/48  飛ばず 0  離地速度中央値 1.290  |h_y|中央値 0.59  両足同時着地 0/48
+R8TCs2       v1.0: jumps done 71 of 144 | members by jumps done [2, 28, 11, 7] | max|feet yaw| at re-arm med 0.22 | final dx (standing) med +0.69
+R10Ws2       v1.0: jumps done 102 of 144 | members by jumps done [3, 11, 11, 23] | max|feet yaw| at re-arm med 0.20 | final dx (standing) med +0.74 | vs R8TCs2 +25/-8 z +2.96
+R8TCs2       v1.5: jumps done 99 of 144 | members by jumps done [1, 17, 8, 22] | max|feet yaw| at re-arm med 0.36 | final dx (standing) med +0.88
+R10Ws2       v1.5: jumps done 141 of 144 | members by jumps done [1, 0, 0, 47] | max|feet yaw| at re-arm med 0.14 | final dx (standing) med +0.93 | vs R8TCs2 +25/-0 z +5.00
+R8TCs2       v2.0: jumps done 124 of 144 | members by jumps done [1, 8, 1, 38] | max|feet yaw| at re-arm med 0.15 | final dx (standing) med +0.91
+R10Ws2       v2.0: jumps done 137 of 144 | members by jumps done [1, 2, 0, 45] | max|feet yaw| at re-arm med 0.13 | final dx (standing) med +0.95 | vs R8TCs2 +7/-0 z +2.65
+#### JB60_DONE

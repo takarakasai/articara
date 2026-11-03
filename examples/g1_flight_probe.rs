@@ -465,6 +465,12 @@ fn main() {
     // leave behind the CoM; landing there pitches the body forward.
     let flight_feet_capture = env_f64("FLIGHT_FEET_CAPTURE", 0.0);
     let flight_feet_capture_t = env_f64("FLIGHT_FEET_CAPTURE_T", 0.12).max(1e-3);
+    // FLIGHT_FEET_WIDTH=w (m, 0 = off): in flight, also carry the soles'
+    // lateral offsets from the CoM to +w/2 (left) and -w/2 (right),
+    // smoothstep over FLIGHT_FEET_CAPTURE_T s from lift-off. Measured
+    // 2026-11-03 (JUMP_REPEAT): the stance narrows with every jump (0.236 ->
+    // 0.18-0.20 -> 0.16 m), the narrow ones fail with a large lift-off h_x.
+    let flight_feet_width = env_f64("FLIGHT_FEET_WIDTH", 0.0).max(0.0);
     let flight_feet_level = flag("FLIGHT_FEET_LEVEL", false);
     // FLIGHT_FEET_TUCK=d (m, 0 = off): in flight, raise both feet d above
     // their lift-off offset from the CoM (smoothstep over FLIGHT_FEET_TUCK_T
@@ -519,7 +525,12 @@ fn main() {
     // jump's T_LAUNCH. Measured 2026-11-03: the landing leaves the CoM ~3 cm
     // behind the soles' midpoint (first jump: 1 cm); the second jumps that
     // succeed are the ones whose CoM was further forward.
-    let jump_repeat_recentre = flag("JUMP_REPEAT_RECENTRE", false);
+    // =2: the target is taken from the soles' current midpoint every tick
+    // (the feet move on the soft contact through the crouch; measured
+    // 2026-11-03: the failing second jumps started the push with the CoM
+    // 1.3 cm sideways of the soles' midpoint, the good ones 0.3 cm).
+    let jump_repeat_recentre_n = env_f64("JUMP_REPEAT_RECENTRE", 0.0) as u32;
+    let jump_repeat_recentre = jump_repeat_recentre_n >= 1;
     let mut stand_off: Option<na::Vector2<f64>> = None;
     let mut rearm_shift = na::Vector2::<f64>::zeros();
     // A repeated jump's crouch starts from the landing reference's height
@@ -1094,11 +1105,32 @@ fn main() {
                     let z_low = stand_z - crouch;
                     let s = t - t_launch;
                     let (mut z, mut vz, mut az) = quintic(crouch_z0.unwrap_or(stand_z), 0.0, z_low, jump_t_crouch, s);
+                    if jump_repeat_recentre_n >= 2 && repeats_done > 0 && heading.is_none() && let Some(off) = stand_off {
+                        // live target: the shift from the soles' midpoint now
+                        let sole = |k: usize| {
+                            let o = misarta::se3::translation(&data.oMi[feet[k]]);
+                            let m = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
+                            (o + m * na::Vector3::new(prof.sole_centre_x, 0.0, 0.0)).xy()
+                        };
+                        rearm_shift = 0.5 * (sole(0) + sole(1)) + off - c_ref.xy();
+                    }
                     let lean_x = jump_lean + rearm_shift.x;
                     let (mut x, mut vx, mut ax) = quintic(0.0, 0.0, lean_x, jump_t_crouch, s);
                     let (y, vy, ay) = quintic(0.0, 0.0, rearm_shift.y, jump_t_crouch, s);
                     let kx = jump_vx / jump_v;
                     let s_push = s - jump_t_crouch - jump_t_hold;
+                    if jump_repeat > 0 && s_push > 0.0 && s_push <= dt + 1e-9 {
+                        let sole = |k: usize| {
+                            let o = misarta::se3::translation(&data.oMi[feet[k]]);
+                            let m = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
+                            (o + m * na::Vector3::new(prof.sole_centre_x, 0.0, 0.0)).xy()
+                        };
+                        let mid = 0.5 * (sole(0) + sole(1));
+                        println!(
+                            "  [push-start] t={t:.3} com-mid ({:+.3},{:+.3}) ref-mid ({:+.3},{:+.3}) | soles L ({:+.3},{:+.3}) R ({:+.3},{:+.3})",
+                            com.x - mid.x, com.y - mid.y, c_ref.x + x - mid.x, c_ref.y + y - mid.y, sole(0).x, sole(0).y, sole(1).x, sole(1).y
+                        );
+                    }
                     if s_push > 0.0 {
                         let dz = stand_z + jump_z_to - z_low;
                         // a(s) = a0 (1 - (1 - r) s / T): v(T) = a0 T (1 + r) / 2,
@@ -1419,6 +1451,14 @@ fn main() {
                     for o in off.iter_mut() {
                         o.x += (tgt - o.x) * b;
                     }
+                }
+            }
+            if flight_feet_width > 0.0 && let Some(t0f) = flight_t0 {
+                let b = ((t - t0f) / flight_feet_capture_t).clamp(0.0, 1.0);
+                let b = b * b * (3.0 - 2.0 * b);
+                for (k, o) in off.iter_mut().enumerate() {
+                    let tgt = if k == 0 { 0.5 } else { -0.5 } * flight_feet_width;
+                    o.y += (tgt - o.y) * b;
                 }
             }
             if flight_feet_tuck_tf > 0.0 && let Some(t0f) = flight_t0 && tuck_adapt.is_none_or(|x| x.0 != t0f) {
