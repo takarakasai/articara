@@ -438,6 +438,28 @@ fn main() {
     let flight_feet_capture = env_f64("FLIGHT_FEET_CAPTURE", 0.0);
     let flight_feet_capture_t = env_f64("FLIGHT_FEET_CAPTURE_T", 0.12).max(1e-3);
     let flight_feet_level = flag("FLIGHT_FEET_LEVEL", false);
+    // FLIGHT_FEET_TUCK=d (m, 0 = off): in flight, raise both feet d above
+    // their lift-off offset from the CoM (smoothstep over FLIGHT_FEET_TUCK_T
+    // s from lift-off), so the floor is met when the CoM has fallen d below
+    // where the legs alone would meet it. Measured 2026-11-03: the feet hang
+    // at their lift-off length and touch down near the apex (CoM 3-7 cm
+    // above lift-off); a weak push (vz ~1.0) then flies 0.1 s, too short to
+    // carry the feet forward, and those land behind the CoM and fall.
+    let flight_feet_tuck = env_f64("FLIGHT_FEET_TUCK", 0.0);
+    let flight_feet_tuck_t = env_f64("FLIGHT_FEET_TUCK_T", 0.06).max(1e-3);
+    // FLIGHT_FEET_TUCK_TF=T (s, 0 = off): choose the tuck per flight at
+    // lift-off so the feet meet the floor T s after lift-off: the CoM height
+    // at which the held feet would touch (standing foot height minus the
+    // lift-off offset) minus the ballistic CoM height at T, clamped to
+    // [0, FLIGHT_FEET_TUCK_MAX]; added to FLIGHT_FEET_TUCK. Only a weak push
+    // (short flight) gets a tuck: a longer flight with the lift-off pitch
+    // momentum over-rotates the body forward (measured 2026-11-03).
+    let flight_feet_tuck_tf = env_f64("FLIGHT_FEET_TUCK_TF", 0.0);
+    let flight_feet_tuck_max = env_f64("FLIGHT_FEET_TUCK_MAX", 0.08);
+    let mut tuck_adapt: Option<(f64, f64)> = None;
+    // DIAG_FFEET=1: in flight, every 5 ticks, each foot's target and actual
+    // offset from the CoM (x, z), and the trunk pitch.
+    let diag_ffeet = flag("DIAG_FFEET", false);
     // FOOT_RESEAT=1: on the ground after the first touchdown, a foot that is
     // out of the contact set (and not the landing step's swing foot) gets a
     // task that brings it straight down, sole level, to the floor under
@@ -1202,6 +1224,32 @@ fn main() {
                 for o in off.iter_mut() {
                     o.x += (tgt - o.x) * b;
                 }
+            }
+            if flight_feet_tuck_tf > 0.0 && let Some(t0f) = flight_t0 && tuck_adapt.is_none_or(|x| x.0 != t0f) {
+                let tf = flight_feet_tuck_tf;
+                let z_nat = (0..2).map(|k| fz_stand[k] - off[k].z).fold(f64::NEG_INFINITY, f64::max);
+                let z_star = com.z + com_vel.z * tf - 0.5 * G * tf * tf;
+                let d = (z_nat - z_star).clamp(0.0, flight_feet_tuck_max);
+                tuck_adapt = Some((t0f, d));
+                println!("  [tuck] t={t:.3} com z {:.4} vz {:+.3}: feet meet the floor at com z {z_nat:.4}, ballistic at {tf:.3} s {z_star:.4} -> tuck {d:.4}", com.z, com_vel.z);
+            }
+            let tuck = flight_feet_tuck + if flight_feet_tuck_tf > 0.0 { tuck_adapt.map_or(0.0, |x| x.1) } else { 0.0 };
+            if tuck != 0.0 && let Some(t0f) = flight_t0 {
+                let b = ((t - t0f) / flight_feet_tuck_t).clamp(0.0, 1.0);
+                let b = b * b * (3.0 - 2.0 * b);
+                for o in off.iter_mut() {
+                    o.z += tuck * b;
+                }
+            }
+            if diag_ffeet && tick % 5 == 0 {
+                let rel: Vec<String> = (0..2)
+                    .map(|k| {
+                        let p = misarta::se3::translation(&data.oMi[feet[k]]) - com;
+                        format!("tgt ({:+.3},{:+.3}) act ({:+.3},{:+.3})", off[k].x, off[k].z, p.x, p.z)
+                    })
+                    .collect();
+                let (_, pch, _) = st.body_quat.euler_angles();
+                println!("  [ffeet] t={t:.3} com x {:+.3} z {:.4} vx {:+.3} pitch {pch:+.3} | L {} | R {}", com.x, com.z, com_vel.x, rel[0], rel[1]);
             }
             for k in 0..2 {
                 let jf = misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, feet[k]);
