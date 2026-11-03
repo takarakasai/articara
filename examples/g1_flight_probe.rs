@@ -1365,6 +1365,9 @@ fn main() {
                     "reseat" => foot_reseat_w,
                     "momentum roll" => jump_mom_x_w,
                     "fz sym" => jump_fz_sym_w,
+                    // WBCW_MOMENTUM_PUSH: the momentum weight during the push
+                    // and the release only (default = WBCW_MOMENTUM).
+                    "momentum" if in_push => env_f64("WBCW_MOMENTUM_PUSH", mom_w),
                     "momentum" => mom_w,
                     "contact+cones" if contact_rest => wbcw_contact_rest.unwrap_or(wbcw_contact),
                     "contact+cones" => wbcw_contact,
