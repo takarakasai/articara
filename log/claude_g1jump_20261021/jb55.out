@@ -1,0 +1,22 @@
+R3BS JUMP_V=1.0: 着地 0/48  飛ばず 0  離地速度中央値 0.784  |h_y|中央値 0.31  両足同時着地 0/48
+R3BS JUMP_V=1.5: 着地 1/48  飛ばず 0  離地速度中央値 1.203  |h_y|中央値 0.29  両足同時着地 0/48
+R3BS JUMP_V=2.0: 着地 10/48  飛ばず 0  離地速度中央値 1.299  |h_y|中央値 0.59  両足同時着地 1/48
+R3BR JUMP_V=1.0: 着地 1/48  飛ばず 0  離地速度中央値 0.784  |h_y|中央値 0.31  両足同時着地 0/48
+R3BR JUMP_V=1.5: 着地 8/48  飛ばず 0  離地速度中央値 1.203  |h_y|中央値 0.29  両足同時着地 0/48
+R3BR JUMP_V=2.0: 着地 7/48  飛ばず 0  離地速度中央値 1.299  |h_y|中央値 0.59  両足同時着地 1/48
+R3BRS JUMP_V=1.0: 着地 1/48  飛ばず 0  離地速度中央値 0.784  |h_y|中央値 0.31  両足同時着地 0/48
+R3BRS JUMP_V=1.5: 着地 4/48  飛ばず 0  離地速度中央値 1.203  |h_y|中央値 0.29  両足同時着地 0/48
+R3BRS JUMP_V=2.0: 着地 10/48  飛ばず 0  離地速度中央値 1.299  |h_y|中央値 0.59  両足同時着地 1/48
+R3B          v1.0: jumps done 51 of 144 | members by jumps done [2, 41, 5] | max|feet yaw| at re-arm med 0.21 | final dx (standing) med +0.17
+R3BR         v1.0: jumps done 55 of 144 | members by jumps done [2, 37, 9] | max|feet yaw| at re-arm med 0.22 | final dx (standing) med +0.33 | vs R3B +9/-5 z +1.07
+R3BS         v1.0: jumps done 52 of 144 | members by jumps done [3, 38, 7] | max|feet yaw| at re-arm med 0.21 | final dx (standing) med +nan | vs R3B +7/-6 z +0.28
+R3BRS        v1.0: jumps done 54 of 144 | members by jumps done [3, 36, 9] | max|feet yaw| at re-arm med 0.22 | final dx (standing) med +0.15 | vs R3B +9/-6 z +0.77
+R3B          v1.5: jumps done 63 of 144 | members by jumps done [0, 35, 11, 2] | max|feet yaw| at re-arm med 0.24 | final dx (standing) med +0.84
+R3BR         v1.5: jumps done 73 of 144 | members by jumps done [0, 31, 9, 8] | max|feet yaw| at re-arm med 0.24 | final dx (standing) med +0.79 | vs R3B +15/-6 z +1.96
+R3BS         v1.5: jumps done 62 of 144 | members by jumps done [0, 35, 12, 1] | max|feet yaw| at re-arm med 0.29 | final dx (standing) med +0.78 | vs R3B +6/-5 z +0.30
+R3BRS        v1.5: jumps done 68 of 144 | members by jumps done [0, 32, 12, 4] | max|feet yaw| at re-arm med 0.24 | final dx (standing) med +0.69 | vs R3B +11/-6 z +1.21
+R3B          v2.0: jumps done 72 of 144 | members by jumps done [0, 31, 10, 7] | max|feet yaw| at re-arm med 0.16 | final dx (standing) med +0.82
+R3BR         v2.0: jumps done 72 of 144 | members by jumps done [0, 31, 10, 7] | max|feet yaw| at re-arm med 0.15 | final dx (standing) med +0.83 | vs R3B +7/-9 z -0.50
+R3BS         v2.0: jumps done 75 of 144 | members by jumps done [0, 30, 9, 9] | max|feet yaw| at re-arm med 0.15 | final dx (standing) med +0.84 | vs R3B +13/-14 z -0.19
+R3BRS        v2.0: jumps done 78 of 144 | members by jumps done [0, 27, 12, 9] | max|feet yaw| at re-arm med 0.14 | final dx (standing) med +0.92 | vs R3B +13/-12 z +0.20
+#### JB55_DONE

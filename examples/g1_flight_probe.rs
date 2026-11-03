@@ -118,7 +118,7 @@ fn main() {
     let hold_kp = env_f64("HOLD_KP", prof.hold_kp);
     let hold_kd = env_f64("HOLD_KD", prof.hold_kd);
     let total_t = env_f64("T", 4.0);
-    let t_launch = env_f64("T_LAUNCH", 2.0);
+    let mut t_launch = env_f64("T_LAUNCH", 2.0);
     let launch_v = env_f64("LAUNCH_V", 1.0);
     let launch_dur = env_f64("LAUNCH_DUR", 0.10).max(1e-3);
     // JUMP_V > 0: a self-propelled vertical jump instead of the pelvis force.
@@ -264,6 +264,12 @@ fn main() {
     // CoP x and load -- where the post-landing forward run comes from.
     let diag_land = flag("DIAG_LAND", false);
     let trunk_land_vz = env_f64("WBCW_TRUNK_LAND_VZ", 0.0);
+    // WBCW_TRUNK_LAND_T (s, default: for good): WBCW_TRUNK_LAND only this
+    // long after the touchdown, then WBCW_TRUNK again. Measured 2026-11-03
+    // (JUMP_REPEAT): the robot waits for the next jump pitched 0.15 rad
+    // forward under 0.03, and the step back to 0.3 at the re-arm rights it
+    // by running the CoM backward off the heels.
+    let trunk_land_t = env_f64("WBCW_TRUNK_LAND_T", f64::INFINITY);
     let kp_trunk_land = env_f64("KP_TRUNK_LAND", kp_trunk);
     let kd_trunk_land = env_f64("KD_TRUNK_LAND", kd_trunk);
     let mut diag_com_cmd: Option<(na::Vector3<f64>, na::Vector3<f64>)> = None; // (ref, a_cmd)
@@ -430,6 +436,28 @@ fn main() {
     let kp_ff = env_f64("KP_FLIGHT_FEET", 400.0);
     let kd_ff = env_f64("KD_FLIGHT_FEET", 40.0);
     let flight_feet_flat = flag("FLIGHT_FEET_FLAT", false);
+    // FLIGHT_FEET_YAW=1 (with FLIGHT_FEET_FLAT): hold each sole's yaw at its
+    // lift-off yaw instead of letting it turn. Measured 2026-11-03: the jump
+    // leaves with h_z ~0.1-0.2 and nothing holds yaw in flight; the light
+    // legs take it and the feet land turned 0.3-0.7 rad, so the next jump
+    // pushes sideways. Off = bit-identical.
+    let flight_feet_yaw = flag("FLIGHT_FEET_YAW", false);
+    let mut feet_yaw0: [f64; 2] = [0.0; 2];
+    // FLIGHT_TRUNK_YAW=w (0 = off): in flight, a yaw-only pelvis task (weight
+    // w, gains KP/KD_TRUNK) holding the pelvis' lift-off yaw. Measured
+    // 2026-11-03: with the feet's yaw held the trunk took the twist (-0.37
+    // rad in flight) and, back on the ground, turning it back twisted a
+    // foot 0.4 rad on the floor.
+    let flight_trunk_yaw = env_f64("FLIGHT_TRUNK_YAW", 0.0).max(0.0);
+    let mut trunk_yaw0 = 0.0_f64;
+    // STANCE_TRUNK_YAW=w (0 = off): on the ground from the first touchdown
+    // on, a yaw-only pelvis task (weight w) toward the mean yaw of the two
+    // soles. Measured 2026-11-03 (JUMP_REPEAT): after a landing the pelvis
+    // and the feet differ by 0.2-0.3 rad of yaw; the posture task's hip-yaw
+    // pull then twists the feet on the floor in the next crouch, a foot
+    // unloads and the CoM runs backward.
+    let stance_trunk_yaw = env_f64("STANCE_TRUNK_YAW", 0.0).max(0.0);
+    let mut ever_landed = false;
     // FLIGHT_FEET_CAPTURE=k (0 = off): in flight, carry both sole centres
     // from their lift-off offset to k * vx / omega ahead of the CoM (the
     // stopping point of a LIPM at the stand height), smoothstep over
@@ -475,6 +503,45 @@ fn main() {
     let kp_ffr = env_f64("KP_FLIGHT_FEET_ROT", 400.0);
     let kd_ffr = env_f64("KD_FLIGHT_FEET_ROT", 40.0);
     let mut feet_off: Option<[na::Vector3<f64>; 2]> = None;
+    // JUMP_REPEAT=n (0 = off): after a jump has ended in stance (touchdown,
+    // abort or air-abort, with LAND_ABSORB) and JUMP_REPEAT_AFTER s have
+    // passed with both feet loaded, jump again from where the landing
+    // reference holds the CoM, n more times. Each jump starts like the first:
+    // the per-jump state (push, release, landing, touchdown window) is
+    // cleared and T_LAUNCH moves to that tick. Off = bit-identical.
+    let jump_repeat = env_f64("JUMP_REPEAT", 0.0).max(0.0) as usize;
+    let jump_repeat_after = env_f64("JUMP_REPEAT_AFTER", 2.0).max(0.0);
+    let mut repeats_done = 0usize;
+    let mut min_share = 1.0_f64; // JUMP_REPEAT diagnostics: lighter foot's share of the load, min over 0.1 s
+    // JUMP_REPEAT_RECENTRE=1: in a repeated jump's crouch, also carry the
+    // CoM reference (quintic, with the crouch) from where the landing held
+    // it to the soles' midpoint plus the CoM's offset from it at the first
+    // jump's T_LAUNCH. Measured 2026-11-03: the landing leaves the CoM ~3 cm
+    // behind the soles' midpoint (first jump: 1 cm); the second jumps that
+    // succeed are the ones whose CoM was further forward.
+    let jump_repeat_recentre = flag("JUMP_REPEAT_RECENTRE", false);
+    let mut stand_off: Option<na::Vector2<f64>> = None;
+    let mut rearm_shift = na::Vector2::<f64>::zeros();
+    // A repeated jump's crouch starts from the landing reference's height
+    // at the re-arm (with LAND_RISE long, the robot stays low between jumps:
+    // measured 2026-11-03, rising back to the stand height on the displaced
+    // feet rocks the stand from sole edge to sole edge).
+    let mut crouch_z0: Option<f64> = None;
+    // JUMP_REPEAT_SOFT_CROUCH=1: in a repeated jump, the contact weight
+    // stays at WBCW_CONTACT_REST through the crouch and hold (as without
+    // WBCW_CONTACT_REST_LAUNCH); the first jump is unchanged. Measured
+    // 2026-11-03: on the displaced feet after a landing, the stiff contact
+    // rocks the load from foot to foot through the crouch (lighter foot's
+    // share 0.00-0.10; the first jump's crouch 0.50).
+    let jump_repeat_soft_crouch = flag("JUMP_REPEAT_SOFT_CROUCH", false);
+    // JUMP_REPEAT_HEADING=1: a repeated jump goes along the soles' mean yaw
+    // at the re-arm, not world x: the lean, the push's forward part, the
+    // recentring offset (the first jump's, turned by that yaw) and the
+    // flight feet's capture are laid out in that heading. Measured
+    // 2026-11-03: the feet stand turned 0.1-0.3 rad after a landing, and a
+    // world-x push left the second jump with |h_x| 1.2-1.5 (first: ~0.05).
+    let jump_repeat_heading = flag("JUMP_REPEAT_HEADING", false);
+    let mut heading: Option<f64> = None;
     let verbose = flag("VERBOSE", false);
 
     let ctrl_dt = env_f64("CTRL_DT", prof.ctrl_dt);
@@ -533,6 +600,17 @@ fn main() {
         let com_vel = st.com_vel;
         let stand_z = *stand_z.get_or_insert(com.z);
         if t >= t_launch {
+            if jump_repeat > 0 && fwd_x0.is_none() {
+                let sole = |k: usize| {
+                    let o = misarta::se3::translation(&st.data.oMi[feet[k]]);
+                    let m = misarta::se3::rotation_matrix(&st.data.oMi[feet[k]]);
+                    o + m * na::Vector3::new(prof.sole_centre_x, 0.0, 0.0)
+                };
+                let (s0, s1) = (sole(0), sole(1));
+                let mid = 0.5 * (s0 + s1);
+                stand_off = Some(com.xy() - mid.xy());
+                println!("  [jump-1] t={t:.3} com ({:+.3},{:+.3}) | soles L ({:+.3},{:+.3}) R ({:+.3},{:+.3}) | com-mid ({:+.3},{:+.3})", com.x, com.y, s0.x, s0.y, s1.x, s1.y, com.x - mid.x, com.y - mid.y);
+            }
             fwd_x0.get_or_insert(com.x);
         }
         fwd_last_x = com.x;
@@ -624,6 +702,71 @@ fn main() {
                 }
             }
         }
+        if jump_repeat > 0 {
+            let (fl, fr) = (measured.cop[0][2].max(0.0), measured.cop[1][2].max(0.0));
+            if fl + fr > 0.5 * weight {
+                min_share = min_share.min(fl.min(fr) / (fl + fr));
+            }
+        }
+        if jump_repeat > 0 && tick % 50 == 0 {
+            let yaw = |k: usize| {
+                let m = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
+                m[(1, 0)].atan2(m[(0, 0)])
+            };
+            let (_, _, py) = st.body_quat.euler_angles();
+            let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
+            let hz = (&cmm * v_dvec)[2];
+            println!("  [yaw] t={t:.3} nc {} pelvis {py:+.3} feet {:+.3} {:+.3} h_z {hz:+.3} | min load share {min_share:.2}", (0..2).filter(|&k| in_contact[k]).count(), yaw(0), yaw(1));
+            min_share = 1.0;
+        }
+        if jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
+            && let Some((tl, _, _)) = land
+            && t - tl >= jump_repeat_after
+        {
+            repeats_done += 1;
+            let r = diag_com_cmd.map_or(com, |(c, _)| c);
+            com_ref = Some(na::Vector3::new(r.x, r.y, stand_z));
+            let sole = |k: usize| {
+                let o = misarta::se3::translation(&data.oMi[feet[k]]);
+                let m = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
+                (o + m * na::Vector3::new(prof.sole_centre_x, 0.0, 0.0), m[(1, 0)].atan2(m[(0, 0)]))
+            };
+            let ((s0, y0), (s1, y1)) = (sole(0), sole(1));
+            let mid = 0.5 * (s0 + s1);
+            let (rr, pp, _) = st.body_quat.euler_angles();
+            println!(
+                "  [jump-again] t={t:.3} jump {} of {}: com ({:+.3},{:+.3}, z {:.4}) ref ({:+.3},{:+.3}) v ({:+.3},{:+.3}) | soles L ({:+.3},{:+.3}) R ({:+.3},{:+.3}) yaw {y0:+.3} {y1:+.3} | com-mid ({:+.3},{:+.3}) | roll {rr:+.3} pitch {pp:+.3}",
+                repeats_done + 1, jump_repeat + 1, com.x, com.y, com.z, r.x, r.y, com_vel.x, com_vel.z, s0.x, s0.y, s1.x, s1.y, com.x - mid.x, com.y - mid.y
+            );
+            if jump_repeat_heading {
+                let (sy, cy) = (y0.sin() + y1.sin(), y0.cos() + y1.cos());
+                heading = Some(sy.atan2(cy));
+                println!("  [heading] {:+.3} rad", sy.atan2(cy));
+            }
+            if jump_repeat_recentre && let Some(off) = stand_off {
+                let off = na::Rotation2::new(heading.unwrap_or(0.0)) * off;
+                rearm_shift = mid.xy() + off - r.xy();
+                if let Some(psi) = heading {
+                    // the crouch lays the shift out in the heading frame
+                    rearm_shift = na::Rotation2::new(-psi) * rearm_shift;
+                }
+                println!("  [recentre] shift ({:+.3},{:+.3}) over the crouch", rearm_shift.x, rearm_shift.y);
+            }
+            crouch_z0 = Some(r.z);
+            t_launch = t;
+            push_end = None;
+            release_t0 = None;
+            land = None;
+            touchdown_t = None;
+            push_plan = None;
+            h_nat_prev = None;
+            rest_settled = false;
+            first_load = [None, None];
+            hx_done = false;
+            hx_int = [[0.0; 4]; 5];
+            hx_at = [f64::NAN; 6];
+            hx_fz = [[0.0; 2]; 5];
+        }
         if let Some((sw, t0s, _, _, _)) = step_st {
             // The swing foot is out of the contact set until it has swung
             // half way and carries load again; then the step is over.
@@ -676,6 +819,13 @@ fn main() {
                 fwd_lo_vx.get_or_insert(com_vel.x);
                 h_ang0 = None;
                 feet_off = Some(std::array::from_fn(|k| misarta::se3::translation(&data.oMi[feet[k]]) - com));
+                trunk_yaw0 = st.body_quat.euler_angles().2;
+                if flight_feet_yaw {
+                    feet_yaw0 = std::array::from_fn(|k| {
+                        let m = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
+                        m[(1, 0)].atan2(m[(0, 0)])
+                    });
+                }
                 // FLIGHT_FEET_LEVEL=1: hold both feet at the LOWER foot's
                 // height below the CoM, so they meet a flat floor together.
                 // Measured 2026-10-24 (flat feet): the fallers touched down
@@ -700,6 +850,7 @@ fn main() {
                     fwd_td_x = Some(com.x);
                 }
                 touchdown_t.get_or_insert(t);
+                ever_landed = true;
                 com_ref = Some(na::Vector3::new(com.x, com.y, stand_z));
                 if land_absorb {
                     land = Some((t, com, com_vel));
@@ -942,8 +1093,10 @@ fn main() {
                     // crouch, hold, push off
                     let z_low = stand_z - crouch;
                     let s = t - t_launch;
-                    let (mut z, mut vz, mut az) = quintic(stand_z, 0.0, z_low, jump_t_crouch, s);
-                    let (mut x, mut vx, mut ax) = quintic(0.0, 0.0, jump_lean, jump_t_crouch, s);
+                    let (mut z, mut vz, mut az) = quintic(crouch_z0.unwrap_or(stand_z), 0.0, z_low, jump_t_crouch, s);
+                    let lean_x = jump_lean + rearm_shift.x;
+                    let (mut x, mut vx, mut ax) = quintic(0.0, 0.0, lean_x, jump_t_crouch, s);
+                    let (y, vy, ay) = quintic(0.0, 0.0, rearm_shift.y, jump_t_crouch, s);
                     let kx = jump_vx / jump_v;
                     let s_push = s - jump_t_crouch - jump_t_hold;
                     if s_push > 0.0 {
@@ -976,7 +1129,7 @@ fn main() {
                             z = z0 + v0 * sr - 0.5 * G * sr * sr;
                             vz = v0 - G * sr;
                             az = -G;
-                            x = jump_lean + kx * (z0 - z_low) + kx * v0 * sr;
+                            x = lean_x + kx * (z0 - z_low) + kx * v0 * sr;
                             vx = kx * v0;
                             ax = 0.0;
                             let unloaded = measured.cop[0][2] <= f_on && measured.cop[1][2] <= f_on;
@@ -1086,7 +1239,13 @@ fn main() {
                             mpc_h = Some((ph, pdh));
                         }
                     }
-                    (na::Vector3::new(c_ref.x + x, c_ref.y, z), na::Vector3::new(vx, 0.0, vz), na::Vector3::new(ax, 0.0, az))
+                    if let Some(psi) = heading {
+                        let rot = na::Rotation2::new(psi);
+                        let (p, pv, pa) = (rot * na::Vector2::new(x, y), rot * na::Vector2::new(vx, vy), rot * na::Vector2::new(ax, ay));
+                        (na::Vector3::new(c_ref.x + p.x, c_ref.y + p.y, z), na::Vector3::new(pv.x, pv.y, vz), na::Vector3::new(pa.x, pa.y, az))
+                    } else {
+                        (na::Vector3::new(c_ref.x + x, c_ref.y + y, z), na::Vector3::new(vx, vy, vz), na::Vector3::new(ax, ay, az))
+                    }
                 }
                 None => (c_ref, na::Vector3::zeros(), na::Vector3::zeros()),
             };
@@ -1121,6 +1280,34 @@ fn main() {
             let rp_ref = bt::trunk_rp_ref(roll, pitch, &st.v_ang_w, kp_t, kd_t, 0.0, 1.0);
             levels.push(bt::trunk(dyn_ctx.qddot(), &j_trunk, &djv_trunk, &rp_ref, nv));
             names.push("trunk");
+        }
+        let stance_yaw = !flight && stance_trunk_yaw > 0.0 && ever_landed;
+        if (flight && flight_trunk_yaw > 0.0) || stance_yaw {
+            let tgt = if flight {
+                trunk_yaw0
+            } else {
+                let (sy, cy) = (0..2).fold((0.0, 0.0), |(a, b), k| {
+                    let m = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
+                    let y = m[(1, 0)].atan2(m[(0, 0)]);
+                    (a + y.sin(), b + y.cos())
+                });
+                sy.atan2(cy)
+            };
+            let mut e = tgt - st.body_quat.euler_angles().2;
+            e = (e + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI) - std::f64::consts::PI;
+            let a = kp_trunk * e - kd_trunk * st.v_ang_w[2];
+            // The pelvis (root) -- where body_quat and v_ang_w are measured.
+            // On G1 the trunk task's body is torso_link, past the waist yaw
+            // joint: driving its yaw while measuring the pelvis diverged.
+            let j_base = misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, 1);
+            let djv_base = &misarta::jacobian::compute_joint_jacobian_time_derivative(&rig.model, q, v, 1) * v_dvec;
+            levels.push(tasks::cartesian_acceleration(
+                dyn_ctx.qddot(),
+                &j_base.rows(2, 1).into_owned(),
+                &na::DVector::from_vec(vec![djv_base[2]]),
+                &na::DVector::from_vec(vec![a]),
+            ));
+            names.push("trunk yaw");
         }
         if !flight || flight_post {
             levels.push(bt::posture(
@@ -1218,11 +1405,20 @@ fn main() {
         if flight && flight_feet && let Some(mut off) = feet_off {
             if flight_feet_capture > 0.0 && let Some(t0f) = flight_t0 {
                 let h = (stand_z - (fz_stand[0].min(fz_stand[1]) - prof.sole_below_origin)).max(0.3);
-                let tgt = flight_feet_capture * com_vel.x / (G / h).sqrt() - prof.sole_centre_x;
                 let b = ((t - t0f) / flight_feet_capture_t).clamp(0.0, 1.0);
                 let b = b * b * (3.0 - 2.0 * b);
-                for o in off.iter_mut() {
-                    o.x += (tgt - o.x) * b;
+                if let Some(psi) = heading {
+                    let d = na::Vector3::new(psi.cos(), psi.sin(), 0.0);
+                    let tgt = flight_feet_capture * com_vel.dot(&d) / (G / h).sqrt() - prof.sole_centre_x;
+                    for o in off.iter_mut() {
+                        let along = o.dot(&d);
+                        *o += d * ((tgt - along) * b);
+                    }
+                } else {
+                    let tgt = flight_feet_capture * com_vel.x / (G / h).sqrt() - prof.sole_centre_x;
+                    for o in off.iter_mut() {
+                        o.x += (tgt - o.x) * b;
+                    }
                 }
             }
             if flight_feet_tuck_tf > 0.0 && let Some(t0f) = flight_t0 && tuck_adapt.is_none_or(|x| x.0 != t0f) {
@@ -1263,13 +1459,13 @@ fn main() {
                     // flat. Measured 2026-10-24: with position-only feet they
                     // touched down pitched 11-13 deg and rolled 6-8 deg.
                     let rot = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
-                    let yaw = rot[(1, 0)].atan2(rot[(0, 0)]);
+                    let yaw = if flight_feet_yaw { feet_yaw0[k] } else { rot[(1, 0)].atan2(rot[(0, 0)]) };
                     let rot_tgt = *na::Rotation3::from_axis_angle(&na::Vector3::z_axis(), yaw).matrix();
                     let w3 = &jf.rows(0, 3).into_owned() * v_dvec;
                     let omega = na::Vector3::new(w3[0], w3[1], w3[2]);
                     levels.push(bt::swing_with_pose(
                         dyn_ctx.qddot(), &jf, &djv, &pos, &vel, &(com + off[k]), &com_vel,
-                        kp_ff, kp_ff, kd_ff, bt::SwingAxes::XyzRollPitch,
+                        kp_ff, kp_ff, kd_ff, if flight_feet_yaw { bt::SwingAxes::Pose } else { bt::SwingAxes::XyzRollPitch },
                         Some((rot, rot_tgt, omega, kp_ffr, kd_ffr)),
                     ));
                 } else {
@@ -1349,7 +1545,7 @@ fn main() {
         } else {
             touchdown_t.is_some_and(|t0| t - t0 < wbcw_contact_rest_after)
         };
-        let jump_from = if rest_launch { t_launch } else { t_launch + jump_t_crouch + jump_t_hold };
+        let jump_from = if rest_launch && !(jump_repeat_soft_crouch && repeats_done > 0) { t_launch } else { t_launch + jump_t_crouch + jump_t_hold };
         let in_jump = (jump_v > 0.0 && push_end.is_none() && t >= jump_from) || landed_busy;
         let contact_rest = wbcw_contact_rest.is_some() && !in_jump;
         if weighted {
@@ -1361,6 +1557,8 @@ fn main() {
                 let w = match *name {
                     "com" => env_f64("WBCW_COM", 1.0),
                     "flight feet" => flight_feet_w,
+                    "trunk yaw" if flight => flight_trunk_yaw,
+                    "trunk yaw" => stance_trunk_yaw,
                     "step swing" => land_step_w,
                     "reseat" => foot_reseat_w,
                     "momentum roll" => jump_mom_x_w,
@@ -1381,7 +1579,7 @@ fn main() {
                     // WBCW_TRUNK_LAND_VZ (m/s, 0 = always): only after a
                     // landing faster than this. Measured 2026-10-28: 0.1
                     // after every landing drops JUMP_V 1.0 38 -> 27.
-                    "trunk" if touchdown_t.is_some() && (trunk_land_vz <= 0.0 || td_vz < -trunk_land_vz) => {
+                    "trunk" if touchdown_t.is_some_and(|t0| t - t0 < trunk_land_t) && (trunk_land_vz <= 0.0 || td_vz < -trunk_land_vz) => {
                         env_f64("WBCW_TRUNK_LAND", env_f64("WBCW_TRUNK", 0.3))
                     }
                     "trunk" => env_f64("WBCW_TRUNK", 0.3),
@@ -1626,6 +1824,9 @@ fn main() {
     println!("  landing steps: {steps_done}");
     if jump_mpc {
         println!("  push MPC failed solves: {mpc_fails}");
+    }
+    if jump_repeat > 0 {
+        println!("  repeat: {} jumps started, {} flights", repeats_done + 1, flight_spans.len());
     }
     println!("  verdict: {}", if fell { "FELL" } else if flight_spans.is_empty() { "NO FLIGHT" } else { "LANDED" });
 }
