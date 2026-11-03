@@ -1,0 +1,7 @@
+  forward: lift-off vx +0.661, touchdown CoM dx +0.282, final CoM dx +0.362 m
+  verdict: LANDED
+  forward: lift-off vx +0.556, touchdown CoM dx +0.223, final CoM dx +0.295 m
+  verdict: LANDED
+  forward: lift-off vx +0.632, touchdown CoM dx +0.276, final CoM dx +0.351 m
+  verdict: LANDED
+#### RENDER5_DONE
