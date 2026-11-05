@@ -1,0 +1,73 @@
+R10W10s2 JUMP_V=1.0: 着地 4/48  飛ばず 0  離地速度中央値 0.779  |h_y|中央値 0.30  両足同時着地 0/48
+R10W10s2 JUMP_V=1.5: 着地 47/48  飛ばず 0  離地速度中央値 1.201  |h_y|中央値 0.34  両足同時着地 0/48
+R10W10s2 JUMP_V=2.0: 着地 44/48  飛ばず 0  離地速度中央値 1.290  |h_y|中央値 0.59  両足同時着地 0/48
+R10W10 JUMP_V=1.0: 着地 5/48  飛ばず 0  離地速度中央値 0.784  |h_y|中央値 0.31  両足同時着地 0/48
+R10W10 JUMP_V=1.5: 着地 47/48  飛ばず 0  離地速度中央値 1.203  |h_y|中央値 0.29  両足同時着地 0/48
+R10W10 JUMP_V=2.0: 着地 45/48  飛ばず 0  離地速度中央値 1.299  |h_y|中央値 0.59  両足同時着地 1/48
+R10W10       v1.0: jumps done 164 of 480 | members by jumps done [3, 11, 13, 6, 2, 2, 3, 1, 2, 0, 5] | max|feet yaw| at re-arm med 0.28 | final dx (standing) med +2.50
+R10W10       v1.5: jumps done 478 of 480 | members by jumps done [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 47] | max|feet yaw| at re-arm med 0.23 | final dx (standing) med +3.09
+R10W10       v2.0: jumps done 457 of 480 | members by jumps done [0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 45] | max|feet yaw| at re-arm med 0.18 | final dx (standing) med +2.92
+R10W10s2     v1.0: jumps done 164 of 480 | members by jumps done [3, 11, 11, 5, 5, 3, 3, 2, 0, 1, 4] | max|feet yaw| at re-arm med 0.25 | final dx (standing) med +2.57
+R10W10s2     v1.5: jumps done 470 of 480 | members by jumps done [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 47] | max|feet yaw| at re-arm med 0.23 | final dx (standing) med +3.06
+R10W10s2     v2.0: jumps done 451 of 480 | members by jumps done [1, 2, 0, 0, 0, 0, 0, 0, 0, 1, 44] | max|feet yaw| at re-arm med 0.21 | final dx (standing) med +2.92
+R10W10 v1.0
+  re-arm for jump  2: n 45 | width 0.264 | |com-mid|   36 mm | max|yaw| 0.15 | yaw spread 0.14 | com y +0.09
+  re-arm for jump  3: n 34 | width 0.271 | |com-mid|   41 mm | max|yaw| 0.18 | yaw spread 0.12 | com y +0.18
+  re-arm for jump  4: n 21 | width 0.251 | |com-mid|   39 mm | max|yaw| 0.19 | yaw spread 0.14 | com y +0.23
+  re-arm for jump  5: n 15 | width 0.264 | |com-mid|   37 mm | max|yaw| 0.22 | yaw spread 0.19 | com y +0.34
+  re-arm for jump  6: n 13 | width 0.238 | |com-mid|   35 mm | max|yaw| 0.19 | yaw spread 0.08 | com y +0.19
+  re-arm for jump  7: n 11 | width 0.243 | |com-mid|   35 mm | max|yaw| 0.16 | yaw spread 0.05 | com y +0.46
+  re-arm for jump  8: n  8 | width 0.273 | |com-mid|   34 mm | max|yaw| 0.16 | yaw spread 0.04 | com y +0.37
+  re-arm for jump  9: n  7 | width 0.259 | |com-mid|   37 mm | max|yaw| 0.34 | yaw spread 0.21 | com y +0.38
+  re-arm for jump 10: n  5 | width 0.261 | |com-mid|   26 mm | max|yaw| 0.20 | yaw spread 0.10 | com y +0.41
+R10W10 v1.5
+  re-arm for jump  2: n 48 | width 0.232 | |com-mid|   35 mm | max|yaw| 0.10 | yaw spread 0.08 | com y +0.02
+  re-arm for jump  3: n 48 | width 0.252 | |com-mid|   32 mm | max|yaw| 0.09 | yaw spread 0.06 | com y +0.01
+  re-arm for jump  4: n 48 | width 0.251 | |com-mid|   32 mm | max|yaw| 0.10 | yaw spread 0.07 | com y -0.01
+  re-arm for jump  5: n 48 | width 0.250 | |com-mid|   33 mm | max|yaw| 0.11 | yaw spread 0.07 | com y -0.01
+  re-arm for jump  6: n 48 | width 0.255 | |com-mid|   33 mm | max|yaw| 0.14 | yaw spread 0.06 | com y +0.07
+  re-arm for jump  7: n 48 | width 0.255 | |com-mid|   33 mm | max|yaw| 0.13 | yaw spread 0.07 | com y +0.07
+  re-arm for jump  8: n 48 | width 0.247 | |com-mid|   32 mm | max|yaw| 0.10 | yaw spread 0.07 | com y +0.09
+  re-arm for jump  9: n 48 | width 0.243 | |com-mid|   32 mm | max|yaw| 0.11 | yaw spread 0.06 | com y +0.05
+  re-arm for jump 10: n 47 | width 0.240 | |com-mid|   30 mm | max|yaw| 0.10 | yaw spread 0.07 | com y +0.04
+R10W10 v2.0
+  re-arm for jump  2: n 48 | width 0.223 | |com-mid|   33 mm | max|yaw| 0.06 | yaw spread 0.05 | com y -0.02
+  re-arm for jump  3: n 47 | width 0.238 | |com-mid|   29 mm | max|yaw| 0.08 | yaw spread 0.06 | com y -0.05
+  re-arm for jump  4: n 46 | width 0.234 | |com-mid|   27 mm | max|yaw| 0.09 | yaw spread 0.07 | com y -0.06
+  re-arm for jump  5: n 46 | width 0.241 | |com-mid|   26 mm | max|yaw| 0.07 | yaw spread 0.05 | com y -0.06
+  re-arm for jump  6: n 45 | width 0.234 | |com-mid|   26 mm | max|yaw| 0.09 | yaw spread 0.06 | com y -0.02
+  re-arm for jump  7: n 45 | width 0.235 | |com-mid|   27 mm | max|yaw| 0.10 | yaw spread 0.07 | com y -0.01
+  re-arm for jump  8: n 45 | width 0.236 | |com-mid|   26 mm | max|yaw| 0.10 | yaw spread 0.05 | com y +0.01
+  re-arm for jump  9: n 45 | width 0.236 | |com-mid|   27 mm | max|yaw| 0.11 | yaw spread 0.07 | com y -0.01
+  re-arm for jump 10: n 45 | width 0.233 | |com-mid|   27 mm | max|yaw| 0.09 | yaw spread 0.06 | com y +0.02
+R10W10s2 v1.0
+  re-arm for jump  2: n 45 | width 0.262 | |com-mid|   36 mm | max|yaw| 0.14 | yaw spread 0.09 | com y +0.08
+  re-arm for jump  3: n 34 | width 0.244 | |com-mid|   40 mm | max|yaw| 0.15 | yaw spread 0.07 | com y +0.10
+  re-arm for jump  4: n 23 | width 0.262 | |com-mid|   38 mm | max|yaw| 0.14 | yaw spread 0.11 | com y +0.01
+  re-arm for jump  5: n 18 | width 0.252 | |com-mid|   34 mm | max|yaw| 0.17 | yaw spread 0.12 | com y -0.03
+  re-arm for jump  6: n 13 | width 0.282 | |com-mid|   36 mm | max|yaw| 0.08 | yaw spread 0.08 | com y +0.02
+  re-arm for jump  7: n 10 | width 0.284 | |com-mid|   39 mm | max|yaw| 0.16 | yaw spread 0.15 | com y +0.18
+  re-arm for jump  8: n  7 | width 0.267 | |com-mid|   42 mm | max|yaw| 0.25 | yaw spread 0.21 | com y +0.24
+  re-arm for jump  9: n  5 | width 0.275 | |com-mid|   36 mm | max|yaw| 0.20 | yaw spread 0.08 | com y +0.38
+  re-arm for jump 10: n  5 | width 0.281 | |com-mid|   40 mm | max|yaw| 0.10 | yaw spread 0.10 | com y +0.25
+R10W10s2 v1.5
+  re-arm for jump  2: n 47 | width 0.235 | |com-mid|   34 mm | max|yaw| 0.08 | yaw spread 0.06 | com y +0.07
+  re-arm for jump  3: n 47 | width 0.241 | |com-mid|   31 mm | max|yaw| 0.10 | yaw spread 0.06 | com y +0.11
+  re-arm for jump  4: n 47 | width 0.246 | |com-mid|   32 mm | max|yaw| 0.12 | yaw spread 0.07 | com y +0.12
+  re-arm for jump  5: n 47 | width 0.244 | |com-mid|   31 mm | max|yaw| 0.12 | yaw spread 0.06 | com y +0.13
+  re-arm for jump  6: n 47 | width 0.252 | |com-mid|   33 mm | max|yaw| 0.12 | yaw spread 0.06 | com y +0.15
+  re-arm for jump  7: n 47 | width 0.244 | |com-mid|   33 mm | max|yaw| 0.12 | yaw spread 0.05 | com y +0.10
+  re-arm for jump  8: n 47 | width 0.247 | |com-mid|   33 mm | max|yaw| 0.12 | yaw spread 0.06 | com y +0.16
+  re-arm for jump  9: n 47 | width 0.252 | |com-mid|   32 mm | max|yaw| 0.11 | yaw spread 0.06 | com y +0.17
+  re-arm for jump 10: n 47 | width 0.244 | |com-mid|   32 mm | max|yaw| 0.11 | yaw spread 0.06 | com y +0.11
+R10W10s2 v2.0
+  re-arm for jump  2: n 47 | width 0.221 | |com-mid|   32 mm | max|yaw| 0.09 | yaw spread 0.08 | com y -0.04
+  re-arm for jump  3: n 45 | width 0.241 | |com-mid|   26 mm | max|yaw| 0.09 | yaw spread 0.07 | com y -0.04
+  re-arm for jump  4: n 45 | width 0.232 | |com-mid|   27 mm | max|yaw| 0.09 | yaw spread 0.07 | com y -0.03
+  re-arm for jump  5: n 45 | width 0.235 | |com-mid|   28 mm | max|yaw| 0.12 | yaw spread 0.08 | com y -0.01
+  re-arm for jump  6: n 45 | width 0.235 | |com-mid|   27 mm | max|yaw| 0.12 | yaw spread 0.08 | com y -0.04
+  re-arm for jump  7: n 45 | width 0.237 | |com-mid|   25 mm | max|yaw| 0.10 | yaw spread 0.07 | com y +0.02
+  re-arm for jump  8: n 45 | width 0.234 | |com-mid|   27 mm | max|yaw| 0.11 | yaw spread 0.10 | com y +0.00
+  re-arm for jump  9: n 45 | width 0.238 | |com-mid|   25 mm | max|yaw| 0.10 | yaw spread 0.10 | com y +0.00
+  re-arm for jump 10: n 45 | width 0.235 | |com-mid|   28 mm | max|yaw| 0.10 | yaw spread 0.07 | com y +0.04
+#### JB61_DONE
