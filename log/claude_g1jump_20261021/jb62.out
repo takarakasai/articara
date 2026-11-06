@@ -1,0 +1,12 @@
+P1PL JUMP_V=1.0: 着地 0/48  飛ばず 0  離地速度中央値 0.203  |h_y|中央値 1.14  両足同時着地 6/48
+P1L6 JUMP_V=1.0: 着地 0/48  飛ばず 0  離地速度中央値 0.649  |h_y|中央値 0.62  両足同時着地 2/48
+P1L45 JUMP_V=1.0: 着地 12/48  飛ばず 0  離地速度中央値 0.747  |h_y|中央値 0.57  両足同時着地 4/48
+P1V8 JUMP_V=1.0: 着地 21/48  飛ばず 0  離地速度中央値 0.760  |h_y|中央値 0.32  両足同時着地 0/48
+P1L3 JUMP_V=1.0: 着地 25/48  飛ばず 0  離地速度中央値 0.776  |h_y|中央値 0.45  両足同時着地 0/48
+R10W         v1.0: jumps done 99 of 144 | members by jumps done [3, 11, 14, 20] | max|feet yaw| at re-arm med 0.20 | final dx (standing) med +0.76
+P1L3         v1.0: jumps done 105 of 144 | members by jumps done [2, 12, 9, 25] | max|feet yaw| at re-arm med 0.18 | final dx (standing) med +0.94 | vs R10W +16/-12 z +0.76
+P1L45        v1.0: jumps done 60 of 144 | members by jumps done [16, 16, 4, 12] | max|feet yaw| at re-arm med 0.22 | final dx (standing) med +0.97 | vs R10W +7/-28 z -3.55
+P1L6         v1.0: jumps done 4 of 144 | members by jumps done [44, 4] | max|feet yaw| at re-arm med 0.12 | final dx (standing) med +nan | vs R10W +0/-44 z -6.63
+P1V8         v1.0: jumps done 93 of 144 | members by jumps done [6, 12, 9, 21] | max|feet yaw| at re-arm med 0.21 | final dx (standing) med +0.72 | vs R10W +15/-18 z -0.52
+P1PL         v1.0: jumps done 0 of 144 | members by jumps done [48] | max|feet yaw| at re-arm med nan | final dx (standing) med +nan | vs R10W +0/-45 z -6.71
+#### JB62_DONE

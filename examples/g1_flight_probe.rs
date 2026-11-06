@@ -373,6 +373,13 @@ fn main() {
     // step to stop it. Off = bit-identical.
     let land_step = flag("LAND_STEP", false);
     let land_latch = flag("LAND_LATCH", false);
+    // PUSH_LATCH=1: during the push (until the scripted push ends) a foot
+    // stays in the contact set when its load drops. Measured 2026-11-06: at
+    // JUMP_V 1.0 one foot dropped out 0.10-0.16 s into the 0.31 s push and
+    // the failing repeat jumps chattered 2-1-2-1 between the feet, pushing
+    // off one foot then the other (lift-off |h_x| ~1).
+    let push_latch = flag("PUSH_LATCH", false);
+    let mut push_phase = false;
     // DIAG_TD=1: after the first flight, print each foot's first loaded tick
     // with both feet's sole height and roll / pitch (diagnostic only).
     let diag_td = flag("DIAG_TD", false);
@@ -471,7 +478,16 @@ fn main() {
     // 2026-11-03 (JUMP_REPEAT): the stance narrows with every jump (0.236 ->
     // 0.18-0.20 -> 0.16 m), the narrow ones fail with a large lift-off h_x.
     let flight_feet_width = env_f64("FLIGHT_FEET_WIDTH", 0.0).max(0.0);
-    let flight_feet_level = flag("FLIGHT_FEET_LEVEL", false);
+    // FLIGHT_FEET_LEVEL=1: at lift-off, set both feet's height below the
+    // CoM to the lower one's. =2: instead lower the higher foot to the lower
+    // one over FLIGHT_FEET_CAPTURE_T s (smoothstep). Measured 2026-11-06:
+    // at JUMP_V 1.0 the push ends on one foot with the other swung up
+    // ~7 cm; it is still up at touchdown after the 0.17 s flight, lands
+    // 60 ms later and ahead, and the next jump starts from feet staggered by
+    // ~6 cm (2.0: ~1 cm).
+    let flight_feet_level_n = env_f64("FLIGHT_FEET_LEVEL", 0.0);
+    let flight_feet_level = flight_feet_level_n > 0.0 && flight_feet_level_n < 2.0;
+    let flight_feet_level_smooth = flight_feet_level_n >= 2.0;
     // FLIGHT_FEET_TUCK=d (m, 0 = off): in flight, raise both feet d above
     // their lift-off offset from the CoM (smoothstep over FLIGHT_FEET_TUCK_T
     // s from lift-off), so the floor is met when the CoM has fallen d below
@@ -661,6 +677,10 @@ fn main() {
             // only in flight) -- it wandered and the CoM rocked +-4 cm and
             // drifted backward until the fall.
             if land_latch && !loaded && in_contact[s] && touchdown_t.is_some() && step_st.is_none_or(|x| x.0 != s) {
+                flip_count[s] = 0;
+                continue;
+            }
+            if push_latch && push_phase && !loaded && in_contact[s] {
                 flip_count[s] = 0;
                 continue;
             }
@@ -1047,6 +1067,7 @@ fn main() {
             names.push("contact+cones");
         }
         let mut mpc_h: Option<(f64, f64)> = None; // JUMP_MPC: planned (h_y, dh_y)
+        push_phase = false;
         if !flight || flight_keep_com {
             let (mut c_ref, mut cd_ref, mut cdd_ref) = match land {
                 Some((t0, c0, v0)) => {
@@ -1152,6 +1173,7 @@ fn main() {
                             az = a;
                             (jump_v / a, a)
                         };
+                        push_phase = s_push < t_push;
                         x += kx * (z - z_low);
                         vx += kx * vz;
                         ax += kx * az;
@@ -1459,6 +1481,14 @@ fn main() {
                 for (k, o) in off.iter_mut().enumerate() {
                     let tgt = if k == 0 { 0.5 } else { -0.5 } * flight_feet_width;
                     o.y += (tgt - o.y) * b;
+                }
+            }
+            if flight_feet_level_smooth && let Some(t0f) = flight_t0 {
+                let b = ((t - t0f) / flight_feet_capture_t).clamp(0.0, 1.0);
+                let b = b * b * (3.0 - 2.0 * b);
+                let low = off[0].z.min(off[1].z);
+                for o in off.iter_mut() {
+                    o.z += (low - o.z) * b;
                 }
             }
             if flight_feet_tuck_tf > 0.0 && let Some(t0f) = flight_t0 && tuck_adapt.is_none_or(|x| x.0 != t0f) {

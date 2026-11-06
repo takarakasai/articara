@@ -1,0 +1,15 @@
+P2F1 JUMP_V=1.0: 着地 7/48  飛ばず 0  離地速度中央値 0.784  |h_y|中央値 0.31  両足同時着地 16/48
+P2F2 JUMP_V=1.0: 着地 10/48  飛ばず 0  離地速度中央値 0.784  |h_y|中央値 0.31  両足同時着地 6/48
+R10W         v1.0: jumps done 99 of 144 | members by jumps done [3, 11, 14, 20] | max|feet yaw| at re-arm med 0.20 | final dx (standing) med +0.76
+P2F1         v1.0: jumps done 59 of 144 | members by jumps done [13, 18, 10, 7] | max|feet yaw| at re-arm med 0.44 | final dx (standing) med +0.69 | vs R10W +9/-27 z -3.00
+P2F2         v1.0: jumps done 63 of 144 | members by jumps done [13, 17, 8, 10] | max|feet yaw| at re-arm med 0.43 | final dx (standing) med +0.65 | vs R10W +9/-26 z -2.87
+== R10W
+v1.0: 79 re-arms, 25 FAIL
+  stag  ok med +0.057 FAIL med +0.061 | FAIL rate by tercile (cuts +0.048 +0.067): 0.23 0.27 0.44
+== P2F1
+v1.0: 52 re-arms, 28 FAIL
+  stag  ok med +0.042 FAIL med +0.074 | FAIL rate by tercile (cuts +0.033 +0.101): 0.41 0.59 0.61
+== P2F2
+v1.0: 53 re-arms, 25 FAIL
+  stag  ok med +0.086 FAIL med +0.026 | FAIL rate by tercile (cuts +0.025 +0.094): 0.65 0.44 0.33
+#### JB63_DONE
