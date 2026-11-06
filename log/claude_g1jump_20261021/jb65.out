@@ -1,0 +1,46 @@
+P3T10 JUMP_V=1.0: 着地 17/48  飛ばず 0  離地速度中央値 0.709  |h_y|中央値 0.78  両足同時着地 1/48
+P3T03 JUMP_V=1.0: 着地 21/48  飛ばず 0  離地速度中央値 0.817  |h_y|中央値 0.32  両足同時着地 0/48
+P3C14 JUMP_V=1.0: 着地 41/48  飛ばず 0  離地速度中央値 0.849  |h_y|中央値 0.21  両足同時着地 0/48
+P3C12 JUMP_V=1.0: 着地 47/48  飛ばず 0  離地速度中央値 0.837  |h_y|中央値 0.23  両足同時着地 0/48
+R10W         v1.0: jumps done 99 of 144 | members by jumps done [3, 11, 14, 20] | max|feet yaw| at re-arm med 0.20 | final dx (standing) med +0.76
+P3T03        v1.0: jumps done 97 of 144 | members by jumps done [4, 12, 11, 21] | max|feet yaw| at re-arm med 0.14 | final dx (standing) med +0.70 | vs R10W +17/-17 z +0.00
+P3T10        v1.0: jumps done 76 of 144 | members by jumps done [14, 9, 8, 17] | max|feet yaw| at re-arm med 0.12 | final dx (standing) med +0.50 | vs R10W +13/-23 z -1.67
+P3C12        v1.0: jumps done 142 of 144 | members by jumps done [0, 1, 0, 47] | max|feet yaw| at re-arm med 0.14 | final dx (standing) med +0.44 | vs R10W +27/-1 z +4.91
+P3C14        v1.0: jumps done 134 of 144 | members by jumps done [1, 1, 5, 41] | max|feet yaw| at re-arm med 0.19 | final dx (standing) med +0.57 | vs R10W +24/-2 z +4.31
+== P3T03
+v1.0 jump 1: 28 pushes, 2 FAIL
+  pitch  ok med -0.214 FAIL med -0.184 | FAIL rate by tercile (cuts -0.225 -0.183): 0.00 0.11 0.10
+  vz     ok med +0.841 FAIL med +0.710 | FAIL rate by tercile (cuts +0.794 +0.854): 0.11 0.11 0.00
+  flight ok med +0.185 FAIL med +0.158 | FAIL rate by tercile (cuts +0.178 +0.188): 0.11 0.00 0.08
+v1.0 jumps >= 2: 96 pushes, 25 FAIL
+  pitch  ok med -0.327 FAIL med -0.493 | FAIL rate by tercile (cuts -0.443 -0.243): 0.66 0.09 0.03
+  vz     ok med +0.833 FAIL med +0.289 | FAIL rate by tercile (cuts +0.674 +0.852): 0.72 0.03 0.03
+  flight ok med +0.184 FAIL med +0.018 | FAIL rate by tercile (cuts +0.142 +0.186): 0.77 0.00 0.03
+== P3T10
+v1.0 jump 1: 28 pushes, 5 FAIL
+  pitch  ok med -0.260 FAIL med -0.353 | FAIL rate by tercile (cuts -0.318 -0.228): 0.33 0.22 0.00
+  vz     ok med +0.827 FAIL med +0.311 | FAIL rate by tercile (cuts +0.618 +0.881): 0.56 0.00 0.00
+  flight ok med +0.182 FAIL med +0.048 | FAIL rate by tercile (cuts +0.134 +0.186): 0.56 0.00 0.00
+v1.0 jumps >= 2: 78 pushes, 25 FAIL
+  pitch  ok med -0.303 FAIL med -0.349 | FAIL rate by tercile (cuts -0.347 -0.255): 0.54 0.27 0.15
+  vz     ok med +0.813 FAIL med +0.338 | FAIL rate by tercile (cuts +0.390 +0.815): 0.77 0.19 0.00
+  flight ok med +0.180 FAIL med +0.032 | FAIL rate by tercile (cuts +0.072 +0.180): 0.88 0.12 0.00
+== P3C12
+v1.0 jump 1: 28 pushes, 0 FAIL
+  pitch  ok med -0.252 FAIL med +nan | FAIL rate by tercile (cuts -0.286 -0.226): 0.00 0.00 0.00
+  vz     ok med +0.826 FAIL med +nan | FAIL rate by tercile (cuts +0.811 +0.838): 0.00 0.00 0.00
+  flight ok med +0.182 FAIL med +nan | FAIL rate by tercile (cuts +0.178 +0.184): 0.00 0.00 0.00
+v1.0 jumps >= 2: 114 pushes, 0 FAIL
+  pitch  ok med -0.241 FAIL med +nan | FAIL rate by tercile (cuts -0.282 -0.192): 0.00 0.00 0.00
+  vz     ok med +0.846 FAIL med +nan | FAIL rate by tercile (cuts +0.826 +0.870): 0.00 0.00 0.00
+  flight ok med +0.186 FAIL med +nan | FAIL rate by tercile (cuts +0.184 +0.190): 0.00 0.00 0.00
+== P3C14
+v1.0 jump 1: 28 pushes, 1 FAIL
+  pitch  ok med -0.269 FAIL med -0.193 | FAIL rate by tercile (cuts -0.277 -0.221): 0.00 0.00 0.10
+  vz     ok med +0.833 FAIL med +0.781 | FAIL rate by tercile (cuts +0.795 +0.869): 0.11 0.00 0.00
+  flight ok med +0.184 FAIL med +0.176 | FAIL rate by tercile (cuts +0.176 +0.188): 0.00 0.11 0.00
+v1.0 jumps >= 2: 113 pushes, 6 FAIL
+  pitch  ok med -0.219 FAIL med -0.344 | FAIL rate by tercile (cuts -0.271 -0.181): 0.08 0.05 0.03
+  vz     ok med +0.803 FAIL med +0.573 | FAIL rate by tercile (cuts +0.775 +0.830): 0.11 0.05 0.00
+  flight ok med +0.180 FAIL med +0.104 | FAIL rate by tercile (cuts +0.174 +0.184): 0.10 0.05 0.02
+#### JB65_DONE

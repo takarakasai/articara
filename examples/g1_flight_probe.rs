@@ -167,7 +167,7 @@ fn main() {
     let mom_task = flag("MOM_TASK", false);
     let kp_mom = env_f64("KP_MOM", 20.0);
     let mom_w = env_f64("WBCW_MOMENTUM", 0.1);
-    let crouch = env_f64("CROUCH", 0.12);
+    let mut crouch = env_f64("CROUCH", 0.12);
     let jump_t_crouch = env_f64("JUMP_T_CROUCH", 0.8).max(0.05);
     let jump_t_hold = env_f64("JUMP_T_HOLD", 0.3).max(0.0);
     let jump_z_to = env_f64("JUMP_Z_TO", 0.02);
@@ -206,6 +206,14 @@ fn main() {
     };
     let jump_vx = tab("JUMP_VX_TAB").map_or_else(|| env_f64("JUMP_VX", 0.0), |t| interp(&t, jump_v));
     let jump_lean = tab("JUMP_LEAN_TAB").map_or_else(|| env_f64("JUMP_LEAN", 0.0), |t| interp(&t, jump_v));
+    // CROUCH_TAB ("V:depth,..."): CROUCH from JUMP_V the same way. Measured
+    // 2026-11-07: at JUMP_V 1.0 the 0.18 m crouch makes a 0.31 s push; on
+    // two feet the pelvis pitches back through it (-0.45 vs -0.26 rad) and
+    // the repeated jumps fall; 0.12 m (push ~0.2 s) takes 99 -> 142 of 144.
+    if let Some(t) = tab("CROUCH_TAB") {
+        crouch = interp(&t, jump_v);
+        println!("jump tables: JUMP_V {jump_v} -> CROUCH {crouch:.4}");
+    }
     if std::env::var("JUMP_VX_TAB").is_ok() || std::env::var("JUMP_LEAN_TAB").is_ok() {
         println!("jump tables: JUMP_V {jump_v} -> JUMP_VX {jump_vx:.3} JUMP_LEAN {jump_lean:.4}");
     }

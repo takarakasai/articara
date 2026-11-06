@@ -1,0 +1,18 @@
+C12s2 JUMP_V=1.0: 着地 46/48  飛ばず 0  離地速度中央値 0.842  |h_y|中央値 0.31  両足同時着地 0/48
+C12Tm JUMP_V=1.25: 着地 48/48  飛ばず 0  離地速度中央値 1.036  |h_y|中央値 0.35  両足同時着地 0/48
+R10Wm JUMP_V=1.25: 着地 43/48  飛ばず 0  離地速度中央値 1.018  |h_y|中央値 0.34  両足同時着地 0/48
+C12T10s2 JUMP_V=1.0: 着地 40/48  飛ばず 0  離地速度中央値 0.842  |h_y|中央値 0.31  両足同時着地 0/48
+C12T10 JUMP_V=1.0: 着地 40/48  飛ばず 0  離地速度中央値 0.837  |h_y|中央値 0.23  両足同時着地 0/48
+P3C10 JUMP_V=1.0: 着地 48/48  飛ばず 0  離地速度中央値 0.791  |h_y|中央値 0.52  両足同時着地 4/48
+R10Ws2       v1.0: jumps done 102 of 144 | members by jumps done [3, 11, 11, 23] | max|feet yaw| at re-arm med 0.20 | final dx (standing) med +0.74
+C12s2        v1.0: jumps done 142 of 144 | members by jumps done [0, 0, 2, 46] | max|feet yaw| at re-arm med 0.14 | final dx (standing) med +0.43 | vs R10Ws2 +24/-1 z +4.60
+R10W10       v1.0: jumps done 164 of 480 | members by jumps done [3, 11, 13, 6, 2, 2, 3, 1, 2, 0, 5] | max|feet yaw| at re-arm med 0.28 | final dx (standing) med +2.50
+C12T10       v1.0: jumps done 447 of 480 | members by jumps done [0, 1, 0, 0, 1, 2, 0, 2, 0, 2, 40] | max|feet yaw| at re-arm med 0.25 | final dx (standing) med +1.61 | vs R10W10 +42/-2 z +6.03
+R10W10s2     v1.0: jumps done 164 of 480 | members by jumps done [3, 11, 11, 5, 5, 3, 3, 2, 0, 1, 4] | max|feet yaw| at re-arm med 0.25 | final dx (standing) med +2.57
+C12T10s2     v1.0: jumps done 437 of 480 | members by jumps done [0, 0, 2, 1, 1, 1, 1, 1, 1, 0, 40] | max|feet yaw| at re-arm med 0.23 | final dx (standing) med +1.58 | vs R10W10s2 +40/-2 z +5.86
+R10Wm        v1.25: jumps done 133 of 144 | members by jumps done [3, 0, 2, 43] | max|feet yaw| at re-arm med 0.16 | final dx (standing) med +0.85
+C12Tm        v1.25: jumps done 144 of 144 | members by jumps done [0, 0, 0, 48] | max|feet yaw| at re-arm med 0.15 | final dx (standing) med +0.76 | vs R10Wm +5/-0 z +2.24
+R10W         v1.0: jumps done 99 of 144 | members by jumps done [3, 11, 14, 20] | max|feet yaw| at re-arm med 0.20 | final dx (standing) med +0.76
+P3C12        v1.0: jumps done 142 of 144 | members by jumps done [0, 1, 0, 47] | max|feet yaw| at re-arm med 0.14 | final dx (standing) med +0.44 | vs R10W +27/-1 z +4.91
+P3C10        v1.0: jumps done 144 of 144 | members by jumps done [0, 0, 0, 48] | max|feet yaw| at re-arm med 0.12 | final dx (standing) med +0.32 | vs R10W +28/-0 z +5.29
+#### JB66_DONE
