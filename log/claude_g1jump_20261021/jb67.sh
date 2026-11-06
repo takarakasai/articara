@@ -1,0 +1,17 @@
+#!/bin/bash
+# R10C（R10W＋CROUCH_TAB 1.0:0.12,1.5:0.18）の 1.0 で前への伸びを取り戻す: JUMP_VX_TAB の 1.0 の値 1.0→1.2／1.4／1.6、前出し 3 cm（JUMP_LEAN_TAB 1.0:0.03）。3 回跳び、種 31415、j43。基準は P3C12（1.0 で R10C と同じ物理）。
+D=/home/takara/work/dp/articara/log/claude_g1jump_20261021; B=$D/g1_flight_probe_j43
+X='"JUMP_ABORT":"1","JUMP_PUSH_R":"0.3","QD_CLAMP":"40","DIAG_TD":"1","FLIGHT_FEET_FLAT":"1","DIAG_HX":"1","RELEASE_FIRST_OFF":"1","WBCW_CONTACT_REST":"0.1","WBCW_TRUNK_LAND":"0.03","FALL_TILT":"1.5","LAND_REF_FOLLOW":"2","AIR_ABORT_T":"0.08"'
+H=',"FLIGHT_FEET_CAPTURE_T":"0.06","KP_FLIGHT_FEET":"1000","KD_FLIGHT_FEET":"63","WBCW_TRUNK_PUSH":"0.003","WBCW_MOMENTUM":"10","WBCW_CONTACT":"100","WBCW_TRUNK_LAND_VZ":"0","JUMP_H_NAT":"1","WBCW_CONTACT_REST_LAUNCH":"1","FLIGHT_FEET_CAPTURE":"0.55","FLIGHT_TRUNK":"0","FLIGHT_FEET_W":"10","WBCW_MOMENTUM_PUSH":"1"'
+RC=',"T":"13","JUMP_REPEAT":"2","FLIGHT_FEET_YAW":"1","WBCW_TRUNK_LAND_T":"1.0","JUMP_REPEAT_SOFT_CROUCH":"1","JUMP_REPEAT_RECENTRE":"1","FLIGHT_FEET_WIDTH":"0.236","CROUCH_TAB":"1.0:0.12,1.5:0.18"'
+LN='"JUMP_LEAN_TAB":"1.0:0,1.5:0.045,2.0:0.06"'
+cd $D
+run() { TAG=$1 SEED=31415 BIN=$B CONDS=1.0 N=48 W=3 EXTRA="{$X$H$RC,$2}" python3 jrand.py; }
+run C12V12 '"JUMP_VX_TAB":"1.0:1.2,1.5:1.2,2.0:1.6",'"$LN" &
+run C12V14 '"JUMP_VX_TAB":"1.0:1.4,1.5:1.2,2.0:1.6",'"$LN" &
+run C12V16 '"JUMP_VX_TAB":"1.0:1.6,1.5:1.2,2.0:1.6",'"$LN" &
+run C12L03 '"JUMP_VX_TAB":"1.0:1.0,1.5:1.2,2.0:1.6","JUMP_LEAN_TAB":"1.0:0.03,1.5:0.045,2.0:0.06"' &
+wait
+python3 rsumm.py P3C12 C12V12 C12V14 C12V16 C12L03 | grep v1.0
+for t in P3C12 C12V12 C12V14 C12V16 C12L03; do echo "== $t"; python3 pushfx.py v1.0 $t | grep -E "pushes|^  (vx|pitch|flight) "; done
+echo "#### JB67_DONE"
