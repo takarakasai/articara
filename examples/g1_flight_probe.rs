@@ -616,6 +616,76 @@ fn main() {
     // jumps): the push fails once the robot faces ~90 deg whatever the jump
     // (free yaw: the 3rd at 86 deg; with STANCE_TRUNK_YAW: the 4th at 93).
     let trunk_rp_yawed = flag("TRUNK_RP_YAWED", false);
+    // JUMP_TURN_TARGET (deg, unset = off): turning jumps aim at this total
+    // turn of the soles' mean yaw, counted from the first push's start. Each
+    // jump's yaw momentum is the turn still to go over JUMP_TURN_GAIN (deg
+    // per kg m^2/s; JUMP_TURN_GAIN_TAB "V:gain,..." by JUMP_V), clamped to
+    // |JUMP_TURN_HZ|; at a re-arm with less than JUMP_TURN_TOL deg to go, no
+    // more jumps. Measured 2026-11-07: at h_z 2 the soles turn 40-46 deg on
+    // the first jump and 44-50 on the later ones (1.5 / 2.0).
+    let jump_turn_target = std::env::var("JUMP_TURN_TARGET").ok().map(|s| s.trim().parse::<f64>().unwrap().to_radians());
+    let jump_turn_gain = tab("JUMP_TURN_GAIN_TAB").map_or_else(|| env_f64("JUMP_TURN_GAIN", 24.0), |t| interp(&t, jump_v)).to_radians();
+    let jump_turn_tol = env_f64("JUMP_TURN_TOL", 5.0).to_radians();
+    // JUMP_TURN_TAB ("V|h_z:deg,h_z:deg,...;V|..."): for the jumps after the
+    // first, the turn one jump makes against its h_z (in the target's
+    // direction, after a jump that turned that way), per JUMP_V; the h_z is
+    // read off it backwards (piecewise linear, interpolated in JUMP_V,
+    // clamped), in place of JUMP_TURN_GAIN. Measured 2026-11-08: a small
+    // h_z still turns the robot on 7-8 deg the way it was turning (1.5: h_z
+    // +0.25 -> +12, -0.25 -> -6, 2 -> +44 deg), so the last jumps
+    // overshoot and add a jump back.
+    let jump_turn_tab: Option<Vec<(f64, Vec<(f64, f64)>)>> = std::env::var("JUMP_TURN_TAB").ok().map(|s| {
+        let mut t: Vec<(f64, Vec<(f64, f64)>)> = s
+            .split(';')
+            .map(|blk| {
+                let (v, pts) = blk.split_once('|').unwrap_or_else(|| panic!("JUMP_TURN_TAB: expected V|h:deg,..., got {blk:?}"));
+                let mut pts: Vec<(f64, f64)> = pts
+                    .split(',')
+                    .map(|p| {
+                        let (a, b) = p.split_once(':').unwrap_or_else(|| panic!("JUMP_TURN_TAB: expected h:deg, got {p:?}"));
+                        (a.trim().parse().unwrap(), b.trim().parse::<f64>().unwrap().to_radians())
+                    })
+                    .collect();
+                pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+                (v.trim().parse().unwrap(), pts)
+            })
+            .collect();
+        t.sort_by(|a, b| a.0.total_cmp(&b.0));
+        t
+    });
+    // h_z for a jump still to turn `rem` (rad): the first jump (or without
+    // JUMP_TURN_TAB) by the gain, the later ones off the table
+    let turn_hz_for = |rem: f64, tgt: f64, first: bool| -> f64 {
+        let cap = jump_turn_hz.abs();
+        let Some(tab) = jump_turn_tab.as_ref().filter(|_| !first) else {
+            return (rem / jump_turn_gain).clamp(-cap, cap);
+        };
+        let s = if tgt < 0.0 { -1.0 } else { 1.0 };
+        let inv = |pts: &[(f64, f64)], y: f64| -> f64 {
+            let (mut lo, mut hi) = (pts[0], pts[pts.len() - 1]);
+            if y <= lo.1 {
+                return lo.0;
+            }
+            if y >= hi.1 {
+                return hi.0;
+            }
+            for w in pts.windows(2) {
+                if y <= w[1].1 {
+                    (lo, hi) = (w[0], w[1]);
+                    break;
+                }
+            }
+            lo.0 + (hi.0 - lo.0) * (y - lo.1) / (hi.1 - lo.1)
+        };
+        let hs: Vec<(f64, f64)> = tab.iter().map(|(v, pts)| (*v, inv(pts, s * rem))).collect();
+        (s * interp(&hs, jump_v)).clamp(-cap, cap)
+    };
+    let wrap_pi = |a: f64| (a + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI) - std::f64::consts::PI;
+    let mut turn_hz_now = jump_turn_hz;
+    let mut turn_feet: Option<(f64, f64)> = None; // soles' mean yaw at the last count, turn so far
+    let mut turn_reached = false;
+    let mut turn_jumps = 0usize;
+    let mut turn_last_feet = f64::NAN;
     let mut turn_td_hz = 0.0_f64;
     // pelvis yaw at the ramp start, lift-off and touchdown (first flight of
     // the last jump); the flight feet turn by the pelvis' yaw since the ramp
@@ -806,7 +876,26 @@ fn main() {
             println!("  [yaw] t={t:.3} nc {} pelvis {py:+.3} feet {:+.3} {:+.3} h_z {hz:+.3} | min load share {min_share:.2}", (0..2).filter(|&k| in_contact[k]).count(), yaw(0), yaw(1));
             min_share = 1.0;
         }
-        if jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
+        if let Some(tgt) = jump_turn_target
+            && !turn_reached
+            && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
+            && let Some((tl, _, _)) = land
+            && t - tl >= jump_repeat_after
+            && let Some((y_last, done)) = turn_feet
+        {
+            let y = soles_mean_yaw(&data.oMi, &feet);
+            let done = done + wrap_pi(y - y_last);
+            turn_feet = Some((y, done));
+            let rem = tgt - done;
+            if rem.abs() < jump_turn_tol {
+                turn_reached = true;
+                println!("  [turn-target] t={t:.3} turned {:+.1} deg, {:+.1} to go: no more jumps", done.to_degrees(), rem.to_degrees());
+            } else {
+                turn_hz_now = turn_hz_for(rem, tgt, false);
+                println!("  [turn-target] t={t:.3} turned {:+.1} deg, {:+.1} to go: h_z {turn_hz_now:+.3}", done.to_degrees(), rem.to_degrees());
+            }
+        }
+        if jump_repeat > repeats_done && !turn_reached && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
         {
@@ -1399,6 +1488,9 @@ fn main() {
         let djv_trunk = &misarta::jacobian::compute_joint_jacobian_time_derivative(&rig.model, q, v, rig.trunk_mi) * v_dvec;
         let (roll, pitch, yaw_now) = st.body_quat.euler_angles();
         turn_last_yaw = yaw_now;
+        if jump_turn_target.is_some() {
+            turn_last_feet = soles_mean_yaw(&data.oMi, &feet);
+        }
         if !flight || flight_trunk {
             // KP/KD_TRUNK_LAND: the trunk gains after a landing faster than
             // WBCW_TRUNK_LAND_VZ (default = KP/KD_TRUNK). Measured
@@ -1521,14 +1613,22 @@ fn main() {
             if jump_turn_hz != 0.0 && jump_v > 0.0 && s_j >= t_ch - jump_turn_t0 && touchdown_t.is_none() {
                 if turn_yaw[0].is_nan() {
                     turn_yaw[0] = st.body_quat.euler_angles().2;
+                    turn_jumps += 1;
+                    if let Some(tgt) = jump_turn_target
+                        && turn_feet.is_none()
+                    {
+                        turn_feet = Some((soles_mean_yaw(&data.oMi, &feet), 0.0));
+                        turn_hz_now = turn_hz_for(tgt, tgt, true);
+                        println!("  [turn-target] t={t:.3} target {:+.1} deg: h_z {turn_hz_now:+.3}", tgt.to_degrees());
+                    }
                 }
                 let dz = crouch + jump_z_to;
                 let r = jump_push_r;
                 let t_push = if r < 1.0 { 3.0 * dz * (1.0 + r) / ((2.0 + r) * jump_v) } else { 2.0 * dz / jump_v };
                 let tr = t_push + jump_turn_t0;
                 let p = (s_j - t_ch + jump_turn_t0) / tr;
-                h_ref_m[2] = jump_turn_hz * p.clamp(0.0, 1.0);
-                dh_ref_m[2] = if p < 1.0 { jump_turn_hz / tr } else { 0.0 };
+                h_ref_m[2] = turn_hz_now * p.clamp(0.0, 1.0);
+                dh_ref_m[2] = if p < 1.0 { turn_hz_now / tr } else { 0.0 };
             }
             if jump_turn_hz != 0.0 && jump_turn_land_t > 0.0 && let Some(td) = touchdown_t
                 && t - td < jump_turn_land_t
@@ -2020,6 +2120,13 @@ fn main() {
             turn_yaw[0], turn_yaw[1], turn_yaw[2], turn_last_yaw, turn_yaw[2] - turn_yaw[1], turn_last_yaw - turn_yaw[0]
         );
     }
+    if let Some(tgt) = jump_turn_target {
+        let fin = turn_feet.map_or(f64::NAN, |(y, done)| done + wrap_pi(turn_last_feet - y));
+        println!(
+            "  turn target {:+.1} deg: soles turned {:+.1} deg at the end (error {:+.1}), {turn_jumps} turning jumps, reached {turn_reached}",
+            tgt.to_degrees(), fin.to_degrees(), (fin - tgt).to_degrees()
+        );
+    }
     println!("  max tilt after touchdown: {max_tilt_after:.3} rad, min CoM z after touchdown {min_com_z_after:.3} (stand {:.3})", stand_z.unwrap_or(0.0));
     println!("  first touchdown vz {td_vz:+.3} m/s, peak GRF in the first 1 s {:.2} x weight, peak torque-box use {peak_tau_after:.2}", peak_grf_after / weight);
     println!("  degraded solves (all): {}", tally.n);
@@ -2226,6 +2333,19 @@ fn plan_push(
         zeta: zeta.to_vec(),
         fz: fz.to_vec(),
     })
+}
+
+/// The soles' mean yaw (rad), from the feet frames.
+#[cfg(feature = "mujoco")]
+fn soles_mean_yaw(o_mi: &[misarta::se3::SE3<f64>], feet: &[usize; 2]) -> f64 {
+    let (mut sy, mut cy) = (0.0, 0.0);
+    for &k in feet {
+        let m = misarta::se3::rotation_matrix(&o_mi[k]);
+        let y = m[(1, 0)].atan2(m[(0, 0)]);
+        sy += y.sin();
+        cy += y.cos();
+    }
+    sy.atan2(cy)
 }
 
 #[cfg(not(feature = "mujoco"))]

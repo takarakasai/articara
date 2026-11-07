@@ -1,0 +1,25 @@
+TX45 JUMP_V=1.5: 着地 48/48  飛ばず 0  離地速度中央値 0.694  |h_y|中央値 0.27  両足同時着地 0/48
+TX45 JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 0.958  |h_y|中央値 0.51  両足同時着地 0/48
+TX90n JUMP_V=1.5: 着地 48/48  飛ばず 0  離地速度中央値 0.688  |h_y|中央値 0.28  両足同時着地 0/48
+TX90n JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 0.955  |h_y|中央値 0.54  両足同時着地 0/48
+TX90 JUMP_V=1.5: 着地 46/48  飛ばず 0  離地速度中央値 0.694  |h_y|中央値 0.27  両足同時着地 0/48
+TX90 JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 0.958  |h_y|中央値 0.51  両足同時着地 0/48
+TX180 JUMP_V=1.5: 着地 44/48  飛ばず 0  離地速度中央値 0.694  |h_y|中央値 0.27  両足同時着地 0/48
+TX180 JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 0.958  |h_y|中央値 0.51  両足同時着地 0/48
+TW45     v1.5: standing 47/48 | |err|<=5 39 <=10 47 | err med -2.7 |err| p90 6.9 max 7.4 | jumps {1: 24, 2: 21, 3: 2}
+TW45     v2.0: standing 48/48 | |err|<=5 48 <=10 48 | err med +0.8 |err| p90 4.2 max 4.9 | jumps {1: 38, 2: 10}
+TX45     v1.5: standing 48/48 | |err|<=5 41 <=10 48 | err med -2.2 |err| p90 6.9 max 7.4 | jumps {1: 24, 2: 23, 3: 1}
+TX45     v2.0: standing 48/48 | |err|<=5 48 <=10 48 | err med +1.2 |err| p90 4.2 max 4.9 | jumps {1: 38, 2: 10}
+TW90     v1.5: standing 48/48 | |err|<=5 39 <=10 48 | err med -1.1 |err| p90 6.3 max 8.0 | jumps {2: 17, 3: 25, 4: 6}
+TW90     v2.0: standing 48/48 | |err|<=5 46 <=10 48 | err med +0.9 |err| p90 3.8 max 6.6 | jumps {2: 44, 3: 3, 4: 1}
+TX90     v1.5: standing 46/48 | |err|<=5 37 <=10 46 | err med -0.6 |err| p90 6.3 max 8.0 | jumps {2: 17, 3: 24, 4: 5}
+TX90     v2.0: standing 48/48 | |err|<=5 47 <=10 48 | err med +0.9 |err| p90 3.8 max 5.7 | jumps {2: 44, 3: 3, 4: 1}
+TW90n    v1.5: standing 48/48 | |err|<=5 38 <=10 48 | err med +2.1 |err| p90 6.4 max 7.5 | jumps {2: 19, 3: 23, 4: 6}
+TW90n    v2.0: standing 48/48 | |err|<=5 48 <=10 48 | err med -0.6 |err| p90 4.3 max 5.0 | jumps {2: 44, 3: 4}
+TX90n    v1.5: standing 48/48 | |err|<=5 38 <=10 48 | err med +0.9 |err| p90 6.4 max 7.5 | jumps {2: 19, 3: 22, 4: 7}
+TX90n    v2.0: standing 48/48 | |err|<=5 48 <=10 48 | err med -0.8 |err| p90 4.3 max 5.0 | jumps {2: 44, 3: 4}
+TW180    v1.5: standing 44/48 | |err|<=5 36 <=10 43 | err med -0.1 |err| p90 5.5 max 18.4 | jumps {4: 9, 5: 29, 6: 6}
+TW180    v2.0: standing 48/48 | |err|<=5 46 <=10 48 | err med -0.5 |err| p90 4.5 max 7.1 | jumps {4: 43, 5: 2, 6: 1, 7: 2}
+TX180    v1.5: standing 44/48 | |err|<=5 39 <=10 44 | err med -0.5 |err| p90 5.0 max 6.8 | jumps {4: 9, 5: 29, 6: 6}
+TX180    v2.0: standing 48/48 | |err|<=5 47 <=10 48 | err med -0.5 |err| p90 4.1 max 7.1 | jumps {4: 43, 5: 5}
+#### JT23_DONE
