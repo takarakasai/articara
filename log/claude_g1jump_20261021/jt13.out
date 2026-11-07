@@ -1,0 +1,34 @@
+RTM1 JUMP_V=1.5: 着地 14/16  飛ばず 0  離地速度中央値 0.682  |h_y|中央値 0.33  両足同時着地 0/16
+RTM1 JUMP_V=2.0: 着地 11/16  飛ばず 0  離地速度中央値 0.958  |h_y|中央値 0.57  両足同時着地 0/16
+RTM2 JUMP_V=1.5: 着地 12/16  飛ばず 0  離地速度中央値 0.701  |h_y|中央値 0.29  両足同時着地 0/16
+RTM2 JUMP_V=2.0: 着地 13/16  飛ばず 0  離地速度中央値 0.945  |h_y|中央値 0.53  両足同時着地 0/16
+RTM05 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 0.715  |h_y|中央値 0.34  両足同時着地 0/16
+RTM05 JUMP_V=2.0: 着地 7/16  飛ばず 0  離地速度中央値 0.971  |h_y|中央値 0.57  両足同時着地 0/16
+RTC        v1.0: jumps done 111 of 144, all 31/48 | feet turned at re-arm +43 +55 | final (standing) med +66 deg min +44
+RTC        v1.5: jumps done 126 of 144, all 35/48 | feet turned at re-arm +43 +61 | final (standing) med +76 deg min +49
+RTM2       v1.5: jumps done 44 of 48, all 12/16 | feet turned at re-arm +43 +61 | final (standing) med +77 deg min +67 | vs RTC +2/-4 z -0.82
+RTM1       v1.5: jumps done 44 of 48, all 14/16 | feet turned at re-arm +39 +56 | final (standing) med +74 deg min +67 | vs RTC +2/-2 z +0.00
+RTM05      v1.5: jumps done 48 of 48, all 16/16 | feet turned at re-arm +39 +57 | final (standing) med +76 deg min +73 | vs RTC +2/-0 z +1.41
+RTC        v2.0: jumps done 105 of 144, all 22/48 | feet turned at re-arm +40 +66 | final (standing) med +85 deg min +69
+RTM2       v2.0: jumps done 45 of 48, all 13/16 | feet turned at re-arm +42 +68 | final (standing) med +96 deg min +86 | vs RTC +6/-0 z +2.45
+RTM1       v2.0: jumps done 43 of 48, all 11/16 | feet turned at re-arm +42 +69 | final (standing) med +100 deg min +92 | vs RTC +6/-4 z +0.63
+RTM05      v2.0: jumps done 39 of 48, all 7/16 | feet turned at re-arm +41 +70 | final (standing) med +102 deg min +95 | vs RTC +6/-5 z +0.30
+RTM2   v1.5: fails j3:land 1 j3:push 3 || j1 roll 0.59 pitch +0.28 uneven 0/16 | j2 roll 0.23 pitch +0.27 uneven 0/16 twist 0.01 | j3 roll 0.29 pitch +0.20 uneven 4/16 twist 0.03
+RTM2   v2.0: fails j3:land 3 || j1 roll 0.73 pitch +0.52 uneven 0/16 | j2 roll 0.10 pitch +0.40 uneven 0/16 twist 0.01 | j3 roll 0.47 pitch +0.54 uneven 0/16 twist 0.01
+RTM1   v1.5: fails j1:land 1 j3:land 1 || j1 roll 0.53 pitch +0.32 uneven 0/16 | j2 roll 0.13 pitch +0.29 uneven 0/15 twist 0.03 | j3 roll 0.12 pitch +0.43 uneven 0/15 twist 0.01
+RTM1   v2.0: fails j3:land 5 || j1 roll 0.56 pitch +0.57 uneven 0/16 | j2 roll 0.09 pitch +0.45 uneven 0/16 twist 0.01 | j3 roll 0.18 pitch +0.54 uneven 0/16 twist 0.01
+RTM05  v1.5: fails  || j1 roll 0.44 pitch +0.33 uneven 0/16 | j2 roll 0.08 pitch +0.44 uneven 0/16 twist 0.01 | j3 roll 0.03 pitch +0.38 uneven 0/16 twist 0.01
+RTM05  v2.0: fails j3:land 9 || j1 roll 0.48 pitch +0.54 uneven 0/16 | j2 roll 0.05 pitch +0.47 uneven 0/16 twist 0.01 | j3 roll 0.15 pitch +0.58 uneven 0/16 twist 0.00
+RTC v2.0: 83 re-arms, 26 then failed
+  width      +0.084..+0.198: 15/27 | +0.198..+0.213: 6/28 | +0.213..+0.305: 5/28
+  stagger    -0.170..-0.045: 11/27 | -0.043..-0.017: 6/28 | -0.016..+0.123: 9/28
+RTM2 v2.0: 32 re-arms, 3 then failed
+  width      +0.193..+0.217: 1/10 | +0.218..+0.228: 1/11 | +0.228..+0.239: 1/11
+  stagger    -0.057..-0.011: 1/10 | -0.009..+0.001: 1/11 | +0.002..+0.018: 1/11
+RTM1 v2.0: 32 re-arms, 5 then failed
+  width      +0.200..+0.225: 3/10 | +0.225..+0.230: 1/11 | +0.231..+0.239: 1/11
+  stagger    -0.040..-0.014: 1/10 | -0.013..-0.004: 1/11 | -0.003..+0.015: 3/11
+RTM05 v2.0: 32 re-arms, 9 then failed
+  width      +0.212..+0.226: 4/10 | +0.228..+0.231: 2/11 | +0.232..+0.238: 3/11
+  stagger    -0.040..-0.012: 0/10 | -0.011..-0.001: 5/11 | +0.001..+0.010: 4/11
+#### JT13_DONE

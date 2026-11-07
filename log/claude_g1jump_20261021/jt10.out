@@ -1,0 +1,40 @@
+RT15 JUMP_V=1.0: 着地 0/8  飛ばず 0  離地速度中央値 0.749  |h_y|中央値 0.33  両足同時着地 1/8
+RT15 JUMP_V=1.5: 着地 1/8  飛ばず 0  離地速度中央値 0.689  |h_y|中央値 0.23  両足同時着地 0/8
+RT15 JUMP_V=2.0: 着地 0/8  飛ばず 0  離地速度中央値 0.964  |h_y|中央値 0.39  両足同時着地 0/8
+RT20s JUMP_V=1.0: 着地 0/8  飛ばず 0  離地速度中央値 0.762  |h_y|中央値 0.27  両足同時着地 0/8
+RT20s JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 0.677  |h_y|中央値 0.32  両足同時着地 0/8
+RT20s JUMP_V=2.0: 着地 4/8  飛ばず 0  離地速度中央値 0.951  |h_y|中央値 0.49  両足同時着地 1/8
+RT15s JUMP_V=1.0: 着地 1/8  飛ばず 0  離地速度中央値 0.749  |h_y|中央値 0.33  両足同時着地 1/8
+RT15s JUMP_V=1.5: 着地 3/8  飛ばず 0  離地速度中央値 0.689  |h_y|中央値 0.23  両足同時着地 0/8
+RT15s JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 0.964  |h_y|中央値 0.39  両足同時着地 0/8
+RT10s JUMP_V=1.0: 着地 6/8  飛ばず 0  離地速度中央値 0.736  |h_y|中央値 0.17  両足同時着地 0/8
+RT10s JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 0.710  |h_y|中央値 0.18  両足同時着地 0/8
+RT10s JUMP_V=2.0: 着地 2/8  飛ばず 0  離地速度中央値 1.031  |h_y|中央値 0.32  両足同時着地 0/8
+RT3s       v1.0: jumps done 9 of 24, all 3/8 | feet turned at re-arm +37 +45 | final (standing) med +53 deg min +50
+RT15       v1.0: jumps done 4 of 24, all 0/8 | feet turned at re-arm +41 +83 | final (standing) med +nan deg min +nan | vs RT3s +2/-3 z -0.45
+RT15s      v1.0: jumps done 5 of 24, all 1/8 | feet turned at re-arm +37 +47 | final (standing) med +64 deg min +64 | vs RT3s +2/-3 z -0.45
+RT10s      v1.0: jumps done 20 of 24, all 6/8 | feet turned at re-arm +42 +52 | final (standing) med +76 deg min +49 | vs RT3s +4/-0 z +2.00
+RT20s      v1.0: jumps done 2 of 24, all 0/8 | feet turned at re-arm +36 +42 | final (standing) med +nan deg min +nan | vs RT3s +1/-3 z -1.00
+RT3s       v1.5: jumps done 12 of 24, all 3/8 | feet turned at re-arm +42 +52 | final (standing) med +57 deg min +51
+RT15       v1.5: jumps done 17 of 24, all 1/8 | feet turned at re-arm +42 +77 | final (standing) med +141 deg min +141 | vs RT3s +5/-3 z +0.71
+RT15s      v1.5: jumps done 18 of 24, all 3/8 | feet turned at re-arm +42 +56 | final (standing) med +66 deg min +65 | vs RT3s +4/-1 z +1.34
+RT10s      v1.5: jumps done 22 of 24, all 6/8 | feet turned at re-arm +43 +62 | final (standing) med +75 deg min +66 | vs RT3s +5/-1 z +1.63
+RT20s      v1.5: jumps done 22 of 24, all 6/8 | feet turned at re-arm +41 +56 | final (standing) med +65 deg min +56 | vs RT3s +5/-1 z +1.63
+RT3s       v2.0: jumps done 22 of 24, all 7/8 | feet turned at re-arm +37 +59 | final (standing) med +81 deg min +69
+RT15       v2.0: jumps done 8 of 24, all 0/8 | feet turned at re-arm +46 +89 | final (standing) med +nan deg min +nan | vs RT3s +0/-8 z -2.83
+RT15s      v2.0: jumps done 22 of 24, all 7/8 | feet turned at re-arm +37 +59 | final (standing) med +81 deg min +69 | vs RT3s +0/-0 z +0.00
+RT10s      v2.0: jumps done 16 of 24, all 2/8 | feet turned at re-arm +43 +67 | final (standing) med +63 deg min +40 | vs RT3s +1/-6 z -1.89
+RT20s      v2.0: jumps done 19 of 24, all 4/8 | feet turned at re-arm +40 +64 | final (standing) med +80 deg min +72 | vs RT3s +1/-4 z -1.34
+RT15 v1.0 1st lift-off vx med +0.109
+RT15 v1.5 1st lift-off vx med -0.130
+RT15 v2.0 1st lift-off vx med -0.010
+RT15s v1.0 1st lift-off vx med +0.109
+RT15s v1.5 1st lift-off vx med -0.130
+RT15s v2.0 1st lift-off vx med -0.010
+RT10s v1.0 1st lift-off vx med +0.059
+RT10s v1.5 1st lift-off vx med -0.168
+RT10s v2.0 1st lift-off vx med -0.043
+RT20s v1.0 1st lift-off vx med +0.146
+RT20s v1.5 1st lift-off vx med -0.097
+RT20s v2.0 1st lift-off vx med +0.030
+#### JT10_DONE

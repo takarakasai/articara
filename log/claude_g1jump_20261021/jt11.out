@@ -1,0 +1,19 @@
+RZ3C JUMP_V=1.0: 着地 29/48  飛ばず 1  離地速度中央値 0.435  |h_y|中央値 0.42  両足同時着地 1/48
+RZ3C JUMP_V=1.5: 着地 44/48  飛ばず 0  離地速度中央値 0.726  |h_y|中央値 0.35  両足同時着地 11/48
+RZ3C JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 0.974  |h_y|中央値 0.56  両足同時着地 13/48
+RTCn JUMP_V=1.0: 着地 32/48  飛ばず 0  離地速度中央値 0.722  |h_y|中央値 0.17  両足同時着地 3/48
+RTCn JUMP_V=1.5: 着地 35/48  飛ばず 0  離地速度中央値 0.697  |h_y|中央値 0.19  両足同時着地 0/48
+RTCn JUMP_V=2.0: 着地 14/48  飛ばず 0  離地速度中央値 1.019  |h_y|中央値 0.37  両足同時着地 1/48
+RTC JUMP_V=1.0: 着地 31/48  飛ばず 0  離地速度中央値 0.716  |h_y|中央値 0.14  両足同時着地 5/48
+RTC JUMP_V=1.5: 着地 35/48  飛ばず 0  離地速度中央値 0.707  |h_y|中央値 0.20  両足同時着地 0/48
+RTC JUMP_V=2.0: 着地 22/48  飛ばず 0  離地速度中央値 1.002  |h_y|中央値 0.39  両足同時着地 1/48
+RZ3C       v1.0: jumps done 102 of 144, all 30/48 | feet turned at re-arm +0 +0 | final (standing) med -1 deg min +0
+RTC        v1.0: jumps done 111 of 144, all 31/48 | feet turned at re-arm +43 +55 | final (standing) med +66 deg min +44 | vs RZ3C +13/-11 z +0.41
+RTCn       v1.0: jumps done 116 of 144, all 32/48 | feet turned at re-arm -42 -53 | final (standing) med -64 deg min -42 | vs RZ3C +16/-14 z +0.37
+RZ3C       v1.5: jumps done 137 of 144, all 44/48 | feet turned at re-arm +0 -0 | final (standing) med -0 deg min +0
+RTC        v1.5: jumps done 126 of 144, all 35/48 | feet turned at re-arm +43 +61 | final (standing) med +76 deg min +49 | vs RZ3C +3/-12 z -2.32
+RTCn       v1.5: jumps done 125 of 144, all 35/48 | feet turned at re-arm -42 -63 | final (standing) med -77 deg min -48 | vs RZ3C +3/-13 z -2.50
+RZ3C       v2.0: jumps done 144 of 144, all 48/48 | feet turned at re-arm -0 -0 | final (standing) med -0 deg min -0
+RTC        v2.0: jumps done 105 of 144, all 22/48 | feet turned at re-arm +40 +66 | final (standing) med +85 deg min +69 | vs RZ3C +0/-26 z -5.10
+RTCn       v2.0: jumps done 100 of 144, all 14/48 | feet turned at re-arm -41 -65 | final (standing) med -87 deg min -67 | vs RZ3C +0/-34 z -5.83
+#### JT11_DONE

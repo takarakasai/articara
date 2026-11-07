@@ -339,7 +339,14 @@ fn main() {
     // push keeps 0, as before). Off = bit-identical.
     let jump_h_nat = flag("JUMP_H_NAT", false);
     let jump_h_nat_push = flag("JUMP_H_NAT_PUSH", false);
+    // JUMP_H_NAT_XY=1: track the natural momentum's x component too (else
+    // h_x is held at 0). Measured 2026-11-07 (repeated turning jumps): facing
+    // 0.7-1.2 rad, the crouch's natural momentum about the body's lateral
+    // axis is partly world x; holding that at 0 rolls the body (lift-off
+    // body-frame h_x -1.4 vs -0.7 on the first jump) and a foot leaves early.
+    let jump_h_nat_xy = flag("JUMP_H_NAT_XY", false);
     let mut h_nat_prev: Option<f64> = None;
+    let mut h_nat_prev_x: Option<f64> = None;
     let diag_hnat = flag("DIAG_HNAT", false);
     // DIAG_PUSHF=1: from 20 ms before the push to 10 ms after it ends, every
     // DIAG_PUSHF_EVERY ticks, per foot (L | R): in the contact set, the QP's
@@ -485,6 +492,8 @@ fn main() {
     // smoothstep over FLIGHT_FEET_CAPTURE_T s from lift-off. Measured
     // 2026-11-03 (JUMP_REPEAT): the stance narrows with every jump (0.236 ->
     // 0.18-0.20 -> 0.16 m), the narrow ones fail with a large lift-off h_x.
+    // With FLIGHT_FEET_TURN and JUMP_REPEAT_HEADING the offsets are across
+    // the jump's heading.
     let flight_feet_width = env_f64("FLIGHT_FEET_WIDTH", 0.0).max(0.0);
     // FLIGHT_FEET_LEVEL=1: at lift-off, set both feet's height below the
     // CoM to the lower one's. =2: instead lower the higher foot to the lower
@@ -588,6 +597,15 @@ fn main() {
     let jump_turn_hz = env_f64("JUMP_TURN_HZ", 0.0);
     let jump_turn_t0 = env_f64("JUMP_TURN_T0", 0.0).max(0.0);
     let flight_feet_turn = flag("FLIGHT_FEET_TURN", false);
+    // JUMP_TURN_LAND_T (s, 0 = off): after a turning jump's touchdown the
+    // momentum task's yaw reference falls linearly from the touchdown h_z to
+    // 0 over this time, instead of to 0 at once. Measured 2026-11-07
+    // (repeated turning jumps): the feet land parallel (toe angle 0.02-0.05
+    // rad) and then twist on the floor (0.09-0.15 rad, p90 0.3) while
+    // h_z ~1.3 is stopped; the next jump starts from a narrow, staggered
+    // stance (2.0: narrowest third fails 15/27, widest 5/28).
+    let jump_turn_land_t = env_f64("JUMP_TURN_LAND_T", 0.0).max(0.0);
+    let mut turn_td_hz = 0.0_f64;
     // pelvis yaw at the ramp start, lift-off and touchdown (first flight of
     // the last jump); the flight feet turn by the pelvis' yaw since the ramp
     // start, so the twist the push leaves between pelvis and feet comes out.
@@ -609,7 +627,10 @@ fn main() {
         sole_offset_local: [prof.sole_centre_x, 0.0, -prof.sole_below_origin],
         friction_mu,
         cop_half: (sole_half_l, sole_half_w),
-        mu_torsion: 0.05,
+        // MU_TORSION (m): the QP's torsion bound |mz| <= MU_TORSION fz per
+        // foot. The G1 soles meet the floor at two points (condim 3), so the
+        // simulator's yaw friction is coupled with the sliding force.
+        mu_torsion: env_f64("MU_TORSION", 0.05),
         f_max_per_foot,
         no_patch: false,
         dt,
@@ -816,6 +837,7 @@ fn main() {
             touchdown_t = None;
             push_plan = None;
             h_nat_prev = None;
+            h_nat_prev_x = None;
             rest_settled = false;
             first_load = [None, None];
             hx_done = false;
@@ -926,6 +948,7 @@ fn main() {
                         .collect();
                     let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
                     let h = &cmm * v_dvec;
+                    turn_td_hz = h[2];
                     println!("  [turn] touchdown pelvis yaw {:+.3} (lift-off {:+.3}, push start {:+.3}), feet yaw {:?}, h_z {:+.3}, yaw rate {:+.3}", turn_yaw[2], turn_yaw[1], turn_yaw[0], fy, h[2], st.v_ang_w[2]);
                 }
             }
@@ -1453,7 +1476,8 @@ fn main() {
                     for (ci, &c) in cols.iter().enumerate() {
                         qd[c] = x[ci];
                     }
-                    let hn = (&cmm * &qd)[1];
+                    let hq = &cmm * &qd;
+                    let hn = hq[1];
                     let scale = if s_j < t_ch { 1.0 } else {
                         let dz = stand_z + jump_z_to - (stand_z - crouch);
                         let r = jump_push_r;
@@ -1465,6 +1489,12 @@ fn main() {
                     h_nat_prev = Some(h);
                     h_ref_m[1] = h;
                     dh_ref_m[1] = dh;
+                    if jump_h_nat_xy {
+                        let hx = scale * hq[0];
+                        dh_ref_m[0] = h_nat_prev_x.map_or(0.0, |hp| (hx - hp) / dt);
+                        h_nat_prev_x = Some(hx);
+                        h_ref_m[0] = hx;
+                    }
                     if diag_hnat && tick % 10 == 0 {
                         println!("  [hnat] t={t:.3} h_nat {hn:+.3} ref {h:+.3} dh {dh:+.2} h_y {:+.3} vz_ref {:+.3} | com x {:+.4} z {:.4}", h_now[1], cd_ref.z, com.x, com.z);
                     }
@@ -1481,6 +1511,12 @@ fn main() {
                 let p = (s_j - t_ch + jump_turn_t0) / tr;
                 h_ref_m[2] = jump_turn_hz * p.clamp(0.0, 1.0);
                 dh_ref_m[2] = if p < 1.0 { jump_turn_hz / tr } else { 0.0 };
+            }
+            if jump_turn_hz != 0.0 && jump_turn_land_t > 0.0 && let Some(td) = touchdown_t
+                && t - td < jump_turn_land_t
+            {
+                h_ref_m[2] = turn_td_hz * (1.0 - (t - td) / jump_turn_land_t);
+                dh_ref_m[2] = -turn_td_hz / jump_turn_land_t;
             }
             let cmm = na::DMatrix::from_column_slice(cmm.nrows(), cmm.ncols(), cmm.as_slice());
             if let Some(tk) = bt::angular_momentum(dyn_ctx.qddot(), &cmm, &dcmm_v, &h_now, &h_ref_m, &dh_ref_m, kp_mom, [true; 3], nv) {
@@ -1531,9 +1567,17 @@ fn main() {
             if flight_feet_width > 0.0 && let Some(t0f) = flight_t0 {
                 let b = ((t - t0f) / flight_feet_capture_t).clamp(0.0, 1.0);
                 let b = b * b * (3.0 - 2.0 * b);
+                // FLIGHT_FEET_TURN with a heading: across the heading, not
+                // world y (a repeated turning jump starts turned).
+                let psi = if flight_feet_turn { heading.unwrap_or(0.0) } else { 0.0 };
+                let n = na::Vector3::new(-psi.sin(), psi.cos(), 0.0);
                 for (k, o) in off.iter_mut().enumerate() {
                     let tgt = if k == 0 { 0.5 } else { -0.5 } * flight_feet_width;
-                    o.y += (tgt - o.y) * b;
+                    if psi == 0.0 {
+                        o.y += (tgt - o.y) * b;
+                    } else {
+                        *o += n * ((tgt - o.dot(&n)) * b);
+                    }
                 }
             }
             if flight_feet_level_smooth && let Some(t0f) = flight_t0 {

@@ -1,0 +1,19 @@
+RT2hX JUMP_V=1.0: 着地 0/8  飛ばず 0  離地速度中央値 0.478  |h_y|中央値 0.09  両足同時着地 0/8
+RT2hX JUMP_V=1.5: 着地 1/8  飛ばず 0  離地速度中央値 0.724  |h_y|中央値 0.12  両足同時着地 0/8
+RT2hX JUMP_V=2.0: 着地 0/8  飛ばず 0  離地速度中央値 1.105  |h_y|中央値 0.07  両足同時着地 0/8
+RZ0X JUMP_V=1.0: 着地 3/8  飛ばず 0  離地速度中央値 0.482  |h_y|中央値 0.38  両足同時着地 1/8
+RZ0X JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 0.742  |h_y|中央値 0.42  両足同時着地 3/8
+RZ0X JUMP_V=2.0: 着地 1/8  飛ばず 0  離地速度中央値 1.014  |h_y|中央値 0.48  両足同時着地 5/8
+RZ0        v1.0: jumps done 9 of 24, all 2/8 | feet turned at re-arm -0 -1 | final (standing) med -2 deg min -1
+RZ0X       v1.0: jumps done 11 of 24, all 3/8 | feet turned at re-arm -0 -2 | final (standing) med -2 deg min -2 | vs RZ0 +2/-2 z +0.00
+RZ0        v1.5: jumps done 23 of 24, all 7/8 | feet turned at re-arm +1 +0 | final (standing) med -0 deg min -0
+RZ0X       v1.5: jumps done 22 of 24, all 6/8 | feet turned at re-arm +0 -1 | final (standing) med -0 deg min +0 | vs RZ0 +1/-2 z -0.58
+RZ0        v2.0: jumps done 14 of 24, all 1/8 | feet turned at re-arm -0 -1 | final (standing) med -1 deg min -1
+RZ0X       v2.0: jumps done 13 of 24, all 1/8 | feet turned at re-arm -1 -3 | final (standing) med -4 deg min -4 | vs RZ0 +2/-3 z -0.45
+RT2h       v1.0: jumps done 16 of 24, all 0/8 | feet turned at re-arm +44 +86 | final (standing) med +nan deg min +nan
+RT2hX      v1.0: jumps done 14 of 24, all 0/8 | feet turned at re-arm +42 +87 | final (standing) med +nan deg min +nan | vs RT2h +0/-2 z -1.41
+RT2h       v1.5: jumps done 15 of 24, all 2/8 | feet turned at re-arm +39 +66 | final (standing) med +106 deg min +103
+RT2hX      v1.5: jumps done 14 of 24, all 1/8 | feet turned at re-arm +38 +69 | final (standing) med +108 deg min +108 | vs RT2h +3/-3 z +0.00
+RT2h       v2.0: jumps done 11 of 24, all 1/8 | feet turned at re-arm +34 +57 | final (standing) med +100 deg min +100
+RT2hX      v2.0: jumps done 10 of 24, all 0/8 | feet turned at re-arm +36 +48 | final (standing) med +nan deg min +nan | vs RT2h +1/-2 z -0.58
+#### JT7_DONE

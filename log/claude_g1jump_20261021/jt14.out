@@ -1,0 +1,46 @@
+RM2 JUMP_V=1.0: 着地 24/48  飛ばず 0  離地速度中央値 0.755  |h_y|中央値 0.12  両足同時着地 0/48
+RM2 JUMP_V=1.5: 着地 40/48  飛ばず 0  離地速度中央値 0.692  |h_y|中央値 0.28  両足同時着地 0/48
+RM2 JUMP_V=2.0: 着地 43/48  飛ばず 0  離地速度中央値 0.948  |h_y|中央値 0.53  両足同時着地 0/48
+RM1 JUMP_V=1.0: 着地 33/48  飛ばず 0  離地速度中央値 0.439  |h_y|中央値 0.20  両足同時着地 1/48
+RM1 JUMP_V=1.5: 着地 43/48  飛ばず 0  離地速度中央値 0.692  |h_y|中央値 0.30  両足同時着地 0/48
+RM1 JUMP_V=2.0: 着地 32/48  飛ばず 0  離地速度中央値 0.971  |h_y|中央値 0.57  両足同時着地 0/48
+RM1n JUMP_V=1.0: 着地 29/48  飛ばず 0  離地速度中央値 0.464  |h_y|中央値 0.18  両足同時着地 0/48
+RM1n JUMP_V=1.5: 着地 42/48  飛ばず 0  離地速度中央値 0.704  |h_y|中央値 0.29  両足同時着地 0/48
+RM1n JUMP_V=2.0: 着地 32/48  飛ばず 0  離地速度中央値 0.954  |h_y|中央値 0.58  両足同時着地 0/48
+RTC        v1.0: jumps done 111 of 144, all 31/48 | feet turned at re-arm +43 +55 | final (standing) med +66 deg min +44
+RM1        v1.0: jumps done 114 of 144, all 33/48 | feet turned at re-arm +32 +43 | final (standing) med +52 deg min +39 | vs RTC +12/-8 z +0.89
+RM2        v1.0: jumps done 91 of 144, all 24/48 | feet turned at re-arm +35 +50 | final (standing) med +58 deg min +44 | vs RTC +12/-22 z -1.71
+RTC        v1.5: jumps done 126 of 144, all 35/48 | feet turned at re-arm +43 +61 | final (standing) med +76 deg min +49
+RM1        v1.5: jumps done 135 of 144, all 43/48 | feet turned at re-arm +39 +57 | final (standing) med +75 deg min +66 | vs RTC +13/-4 z +2.18
+RM2        v1.5: jumps done 136 of 144, all 40/48 | feet turned at re-arm +43 +61 | final (standing) med +78 deg min +67 | vs RTC +12/-6 z +1.41
+RTC        v2.0: jumps done 105 of 144, all 22/48 | feet turned at re-arm +40 +66 | final (standing) med +85 deg min +69
+RM1        v2.0: jumps done 128 of 144, all 32/48 | feet turned at re-arm +42 +70 | final (standing) med +100 deg min +90 | vs RTC +20/-6 z +2.75
+RM2        v2.0: jumps done 138 of 144, all 43/48 | feet turned at re-arm +41 +69 | final (standing) med +96 deg min +86 | vs RTC +25/-1 z +4.71
+RTCn       v1.0: jumps done 116 of 144, all 32/48 | feet turned at re-arm -42 -53 | final (standing) med -64 deg min -42
+RM1n       v1.0: jumps done 106 of 144, all 29/48 | feet turned at re-arm -33 -45 | final (standing) med -58 deg min -36 | vs RTCn +10/-15 z -1.00
+RTCn       v1.5: jumps done 125 of 144, all 35/48 | feet turned at re-arm -42 -63 | final (standing) med -77 deg min -48
+RM1n       v1.5: jumps done 136 of 144, all 42/48 | feet turned at re-arm -40 -57 | final (standing) med -75 deg min -67 | vs RTCn +11/-4 z +1.81
+RTCn       v2.0: jumps done 100 of 144, all 14/48 | feet turned at re-arm -41 -65 | final (standing) med -87 deg min -67
+RM1n       v2.0: jumps done 128 of 144, all 32/48 | feet turned at re-arm -42 -70 | final (standing) med -102 deg min -96 | vs RTCn +26/-5 z +3.77
+RZ3C       v1.0: jumps done 102 of 144, all 30/48 | feet turned at re-arm +0 +0 | final (standing) med -1 deg min +0
+RM1        v1.0: jumps done 114 of 144, all 33/48 | feet turned at re-arm +32 +43 | final (standing) med +52 deg min +39 | vs RZ3C +15/-10 z +1.00
+RM2        v1.0: jumps done 91 of 144, all 24/48 | feet turned at re-arm +35 +50 | final (standing) med +58 deg min +44 | vs RZ3C +15/-16 z -0.18
+RM1n       v1.0: jumps done 106 of 144, all 29/48 | feet turned at re-arm -33 -45 | final (standing) med -58 deg min -36 | vs RZ3C +14/-12 z +0.39
+RZ3C       v1.5: jumps done 137 of 144, all 44/48 | feet turned at re-arm +0 -0 | final (standing) med -0 deg min +0
+RM1        v1.5: jumps done 135 of 144, all 43/48 | feet turned at re-arm +39 +57 | final (standing) med +75 deg min +66 | vs RZ3C +4/-5 z -0.33
+RM2        v1.5: jumps done 136 of 144, all 40/48 | feet turned at re-arm +43 +61 | final (standing) med +78 deg min +67 | vs RZ3C +4/-8 z -1.15
+RM1n       v1.5: jumps done 136 of 144, all 42/48 | feet turned at re-arm -40 -57 | final (standing) med -75 deg min -67 | vs RZ3C +4/-6 z -0.63
+RZ3C       v2.0: jumps done 144 of 144, all 48/48 | feet turned at re-arm -0 -0 | final (standing) med -0 deg min -0
+RM1        v2.0: jumps done 128 of 144, all 32/48 | feet turned at re-arm +42 +70 | final (standing) med +100 deg min +90 | vs RZ3C +0/-16 z -4.00
+RM2        v2.0: jumps done 138 of 144, all 43/48 | feet turned at re-arm +41 +69 | final (standing) med +96 deg min +86 | vs RZ3C +0/-5 z -2.24
+RM1n       v2.0: jumps done 128 of 144, all 32/48 | feet turned at re-arm -42 -70 | final (standing) med -102 deg min -96 | vs RZ3C +0/-16 z -4.00
+RM1    v1.0: fails j1:land 2 j1:push 3 j2:land 3 j2:push 2 j3:land 5 || j1 roll 0.39 pitch +0.09 uneven 4/48 | j2 roll 0.14 pitch +0.23 uneven 8/43 twist 0.02 | j3 roll 0.17 pitch +0.32 uneven 1/38 twist 0.01
+RM1    v1.5: fails j1:land 2 j3:land 1 j3:push 2 || j1 roll 0.52 pitch +0.30 uneven 0/48 | j2 roll 0.10 pitch +0.32 uneven 1/46 twist 0.03 | j3 roll 0.09 pitch +0.38 uneven 2/46 twist 0.00
+RM1    v2.0: fails j3:land 16 || j1 roll 0.56 pitch +0.57 uneven 0/48 | j2 roll 0.08 pitch +0.44 uneven 0/48 twist 0.01 | j3 roll 0.21 pitch +0.54 uneven 0/48 twist 0.01
+RM2    v1.0: fails j1:land 1 j1:push 12 j2:land 2 j2:push 1 j3:land 1 j3:push 7 || j1 roll 0.71 pitch +0.02 uneven 22/48 | j2 roll 0.22 pitch +0.16 uneven 9/35 twist 0.01 | j3 roll 0.29 pitch +0.19 uneven 10/32 twist 0.02
+RM2    v1.5: fails j3:land 1 j3:push 7 || j1 roll 0.60 pitch +0.28 uneven 0/48 | j2 roll 0.20 pitch +0.32 uneven 2/48 twist 0.01 | j3 roll 0.18 pitch +0.28 uneven 9/48 twist 0.03
+RM2    v2.0: fails j2:push 1 j3:land 4 || j1 roll 0.73 pitch +0.53 uneven 0/48 | j2 roll 0.14 pitch +0.40 uneven 1/48 twist 0.02 | j3 roll 0.46 pitch +0.54 uneven 0/47 twist 0.01
+RM1n   v1.0: fails j1:land 4 j1:push 1 j2:land 6 j2:push 3 j3:land 5 || j1 roll 0.39 pitch +0.15 uneven 1/48 | j2 roll 0.13 pitch +0.31 uneven 10/43 twist 0.02 | j3 roll 0.20 pitch +0.33 uneven 1/34 twist 0.01
+RM1n   v1.5: fails j2:land 1 j2:push 1 j3:land 4 || j1 roll 0.52 pitch +0.29 uneven 0/48 | j2 roll 0.11 pitch +0.36 uneven 2/48 twist 0.03 | j3 roll 0.10 pitch +0.36 uneven 0/46 twist 0.01
+RM1n   v2.0: fails j3:land 16 || j1 roll 0.55 pitch +0.58 uneven 0/48 | j2 roll 0.06 pitch +0.47 uneven 0/48 twist 0.01 | j3 roll 0.23 pitch +0.58 uneven 0/48 twist 0.01
+#### JT14_DONE
