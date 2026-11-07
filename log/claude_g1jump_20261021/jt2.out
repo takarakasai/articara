@@ -1,0 +1,17 @@
+TY4h JUMP_V=1.5: 着地 0/8  飛ばず 0  離地速度中央値 1.337  |h_y|中央値 0.70  両足同時着地 0/8
+TY4h JUMP_V=2.0: 着地 0/8  飛ばず 0  離地速度中央値 1.389  |h_y|中央値 0.61  両足同時着地 0/8
+TY3h JUMP_V=1.5: 着地 0/8  飛ばず 0  離地速度中央値 1.201  |h_y|中央値 0.43  両足同時着地 0/8
+TY3h JUMP_V=2.0: 着地 0/8  飛ばず 0  離地速度中央値 1.627  |h_y|中央値 0.49  両足同時着地 0/8
+TY2h JUMP_V=1.5: 着地 0/8  飛ばず 0  離地速度中央値 1.166  |h_y|中央値 0.22  両足同時着地 0/8
+TY2h JUMP_V=2.0: 着地 0/8  飛ばず 0  離地速度中央値 1.448  |h_y|中央値 0.30  両足同時着地 1/8
+TY2 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.717  |h_y|中央値 0.14  両足同時着地 1/8
+TY2 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.128  |h_y|中央値 0.07  両足同時着地 0/8
+TY2        v1.5: landed 8/8 | lift-off h_z +1.36 |h_x| 0.74 | pelvis turned: lift-off +0.26 touchdown +0.63 final +0.64 | feet: touchdown +0.30 final +0.40 | landed only: final pelvis +0.64 feet +0.40
+TY2        v2.0: landed 7/8 | lift-off h_z +1.27 |h_x| 1.07 | pelvis turned: lift-off +0.19 touchdown +0.62 final +0.52 | feet: touchdown +0.41 final +0.41 | landed only: final pelvis +0.53 feet +0.41
+TY2h       v1.5: landed 0/8 | lift-off h_z +1.52 |h_x| 0.76 | pelvis turned: lift-off +0.61 touchdown +1.50 final +0.13 | feet: touchdown +1.19 final -0.34 | landed only: final pelvis +nan feet +nan
+TY2h       v2.0: landed 0/8 | lift-off h_z +1.44 |h_x| 0.61 | pelvis turned: lift-off +0.56 touchdown +0.85 final +1.33 | feet: touchdown +0.87 final +1.01 | landed only: final pelvis +nan feet +nan
+TY3h       v1.5: landed 0/8 | lift-off h_z +2.08 |h_x| 1.23 | pelvis turned: lift-off +0.80 touchdown +2.01 final -2.16 | feet: touchdown +1.57 final +2.14 | landed only: final pelvis +nan feet +nan
+TY3h       v2.0: landed 0/8 | lift-off h_z +2.14 |h_x| 1.19 | pelvis turned: lift-off +0.74 touchdown +2.44 final -1.59 | feet: touchdown +1.93 final +0.94 | landed only: final pelvis +nan feet +nan
+TY4h       v1.5: landed 0/8 | lift-off h_z +2.45 |h_x| 1.62 | pelvis turned: lift-off +0.81 touchdown +2.52 final -1.57 | feet: touchdown +1.83 final +0.20 | landed only: final pelvis +nan feet +nan
+TY4h       v2.0: landed 0/8 | lift-off h_z +2.70 |h_x| 1.47 | pelvis turned: lift-off +0.80 touchdown +2.66 final +1.81 | feet: touchdown +1.81 final +1.56 | landed only: final pelvis +nan feet +nan
+#### JT2_DONE

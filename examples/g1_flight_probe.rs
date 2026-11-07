@@ -577,6 +577,22 @@ fn main() {
     // world-x push left the second jump with |h_x| 1.2-1.5 (first: ~0.05).
     let jump_repeat_heading = flag("JUMP_REPEAT_HEADING", false);
     let mut heading: Option<f64> = None;
+    // JUMP_TURN_HZ (kg m^2/s, 0 = off): a turning jump. Through the push the
+    // momentum task's yaw reference ramps linearly from 0 to this; it is
+    // held through the release until touchdown (flight conserves it).
+    // FLIGHT_FEET_TURN=1: in flight the feet's yaw targets and their offsets
+    // from the CoM turn with the pelvis' yaw since lift-off, so the legs go
+    // round with the body instead of holding the lift-off yaw.
+    // JUMP_TURN_T0 (s, default 0): start the ramp this long before the push
+    // (in the hold), so the yaw momentum is built over a longer time.
+    let jump_turn_hz = env_f64("JUMP_TURN_HZ", 0.0);
+    let jump_turn_t0 = env_f64("JUMP_TURN_T0", 0.0).max(0.0);
+    let flight_feet_turn = flag("FLIGHT_FEET_TURN", false);
+    // pelvis yaw at the ramp start, lift-off and touchdown (first flight of
+    // the last jump); the flight feet turn by the pelvis' yaw since the ramp
+    // start, so the twist the push leaves between pelvis and feet comes out.
+    let mut turn_yaw = [f64::NAN; 3];
+    let mut turn_last_yaw = f64::NAN;
     let verbose = flag("VERBOSE", false);
 
     let ctrl_dt = env_f64("CTRL_DT", prof.ctrl_dt);
@@ -747,7 +763,7 @@ fn main() {
                 min_share = min_share.min(fl.min(fr) / (fl + fr));
             }
         }
-        if jump_repeat > 0 && tick % 50 == 0 {
+        if (jump_repeat > 0 || jump_turn_hz != 0.0) && tick % 50 == 0 {
             let yaw = |k: usize| {
                 let m = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
                 m[(1, 0)].atan2(m[(0, 0)])
@@ -792,6 +808,7 @@ fn main() {
                 println!("  [recentre] shift ({:+.3},{:+.3}) over the crouch", rearm_shift.x, rearm_shift.y);
             }
             crouch_z0 = Some(r.z);
+            turn_yaw = [f64::NAN; 3];
             t_launch = t;
             push_end = None;
             release_t0 = None;
@@ -859,6 +876,9 @@ fn main() {
                 h_ang0 = None;
                 feet_off = Some(std::array::from_fn(|k| misarta::se3::translation(&data.oMi[feet[k]]) - com));
                 trunk_yaw0 = st.body_quat.euler_angles().2;
+                if touchdown_t.is_none() {
+                    turn_yaw[1] = trunk_yaw0;
+                }
                 if flight_feet_yaw {
                     feet_yaw0 = std::array::from_fn(|k| {
                         let m = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
@@ -896,6 +916,18 @@ fn main() {
                 }
                 let fx: Vec<String> = (0..2).map(|k| format!("{:+.3}", misarta::se3::translation(&data.oMi[feet[k]]).x)).collect();
                 println!("  [touchdown] t={t:.3} after {:.3} s, com ({:+.3}, z {:.4}) v ({:+.3}, {:+.3}), foot x {:?}, feet {:?}", t - t0, com.x, com.z, com_vel.x, com_vel.z, fx, in_contact);
+                if jump_turn_hz != 0.0 && turn_yaw[2].is_nan() {
+                    turn_yaw[2] = st.body_quat.euler_angles().2;
+                    let fy: Vec<String> = (0..2)
+                        .map(|k| {
+                            let m = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
+                            format!("{:+.3}", m[(1, 0)].atan2(m[(0, 0)]))
+                        })
+                        .collect();
+                    let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
+                    let h = &cmm * v_dvec;
+                    println!("  [turn] touchdown pelvis yaw {:+.3} (lift-off {:+.3}, push start {:+.3}), feet yaw {:?}, h_z {:+.3}, yaw rate {:+.3}", turn_yaw[2], turn_yaw[1], turn_yaw[0], fy, h[2], st.v_ang_w[2]);
+                }
             }
             _ => {}
         }
@@ -1331,7 +1363,8 @@ fn main() {
         }
         let j_trunk = misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, rig.trunk_mi);
         let djv_trunk = &misarta::jacobian::compute_joint_jacobian_time_derivative(&rig.model, q, v, rig.trunk_mi) * v_dvec;
-        let (roll, pitch, _) = st.body_quat.euler_angles();
+        let (roll, pitch, yaw_now) = st.body_quat.euler_angles();
+        turn_last_yaw = yaw_now;
         if !flight || flight_trunk {
             // KP/KD_TRUNK_LAND: the trunk gains after a landing faster than
             // WBCW_TRUNK_LAND_VZ (default = KP/KD_TRUNK). Measured
@@ -1437,6 +1470,18 @@ fn main() {
                     }
                 }
             }
+            if jump_turn_hz != 0.0 && jump_v > 0.0 && s_j >= t_ch - jump_turn_t0 && touchdown_t.is_none() {
+                if turn_yaw[0].is_nan() {
+                    turn_yaw[0] = st.body_quat.euler_angles().2;
+                }
+                let dz = crouch + jump_z_to;
+                let r = jump_push_r;
+                let t_push = if r < 1.0 { 3.0 * dz * (1.0 + r) / ((2.0 + r) * jump_v) } else { 2.0 * dz / jump_v };
+                let tr = t_push + jump_turn_t0;
+                let p = (s_j - t_ch + jump_turn_t0) / tr;
+                h_ref_m[2] = jump_turn_hz * p.clamp(0.0, 1.0);
+                dh_ref_m[2] = if p < 1.0 { jump_turn_hz / tr } else { 0.0 };
+            }
             let cmm = na::DMatrix::from_column_slice(cmm.nrows(), cmm.ncols(), cmm.as_slice());
             if let Some(tk) = bt::angular_momentum(dyn_ctx.qddot(), &cmm, &dcmm_v, &h_now, &h_ref_m, &dh_ref_m, kp_mom, [true; 3], nv) {
                 levels.push(tk);
@@ -1499,6 +1544,18 @@ fn main() {
                     o.z += (low - o.z) * b;
                 }
             }
+            let dpsi_turn = if flight_feet_turn {
+                let d = st.body_quat.euler_angles().2 - if turn_yaw[0].is_nan() { trunk_yaw0 } else { turn_yaw[0] };
+                (d + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI) - std::f64::consts::PI
+            } else {
+                0.0
+            };
+            if flight_feet_turn {
+                let rz = na::Rotation3::from_axis_angle(&na::Vector3::z_axis(), dpsi_turn);
+                for o in off.iter_mut() {
+                    *o = rz * *o;
+                }
+            }
             if flight_feet_tuck_tf > 0.0 && let Some(t0f) = flight_t0 && tuck_adapt.is_none_or(|x| x.0 != t0f) {
                 let tf = flight_feet_tuck_tf;
                 let z_nat = (0..2).map(|k| fz_stand[k] - off[k].z).fold(f64::NEG_INFINITY, f64::max);
@@ -1537,7 +1594,7 @@ fn main() {
                     // flat. Measured 2026-10-24: with position-only feet they
                     // touched down pitched 11-13 deg and rolled 6-8 deg.
                     let rot = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
-                    let yaw = if flight_feet_yaw { feet_yaw0[k] } else { rot[(1, 0)].atan2(rot[(0, 0)]) };
+                    let yaw = if flight_feet_yaw { feet_yaw0[k] + dpsi_turn } else { rot[(1, 0)].atan2(rot[(0, 0)]) };
                     let rot_tgt = *na::Rotation3::from_axis_angle(&na::Vector3::z_axis(), yaw).matrix();
                     let w3 = &jf.rows(0, 3).into_owned() * v_dvec;
                     let omega = na::Vector3::new(w3[0], w3[1], w3[2]);
@@ -1893,6 +1950,12 @@ fn main() {
         println!(
             "  forward: lift-off vx {:+.3}, touchdown CoM dx {:+.3}, final CoM dx {:+.3} m",
             fwd_lo_vx.unwrap_or(f64::NAN), fwd_td_x.map_or(f64::NAN, |x| x - x0), fwd_last_x - x0
+        );
+    }
+    if jump_turn_hz != 0.0 {
+        println!(
+            "  turn: pelvis yaw push start {:+.3}, lift-off {:+.3}, touchdown {:+.3}, final {:+.3} | in flight {:+.3}, push start to final {:+.3} rad",
+            turn_yaw[0], turn_yaw[1], turn_yaw[2], turn_last_yaw, turn_yaw[2] - turn_yaw[1], turn_last_yaw - turn_yaw[0]
         );
     }
     println!("  max tilt after touchdown: {max_tilt_after:.3} rad, min CoM z after touchdown {min_com_z_after:.3} (stand {:.3})", stand_z.unwrap_or(0.0));

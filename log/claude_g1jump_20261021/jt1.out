@@ -1,0 +1,65 @@
+TZ8 JUMP_V=1.5: 着地 0/8  飛ばず 0  離地速度中央値 1.463  |h_y|中央値 0.46  両足同時着地 0/8
+TZ8 JUMP_V=2.0: 着地 0/8  飛ばず 0  離地速度中央値 1.569  |h_y|中央値 0.54  両足同時着地 0/8
+TZ4 JUMP_V=1.5: 着地 5/8  飛ばず 0  離地速度中央値 0.746  |h_y|中央値 0.29  両足同時着地 0/8
+TZ4 JUMP_V=2.0: 着地 3/8  飛ばず 0  離地速度中央値 1.370  |h_y|中央値 0.52  両足同時着地 0/8
+TZ0 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.734  |h_y|中央値 0.40  両足同時着地 3/8
+TZ0 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.017  |h_y|中央値 0.40  両足同時着地 4/8
+TZ2 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.717  |h_y|中央値 0.14  両足同時着地 0/8
+TZ2 JUMP_V=2.0: 着地 4/8  飛ばず 0  離地速度中央値 1.128  |h_y|中央値 0.07  両足同時着地 0/8
+== TZ0 v1.5: 8/8 landed
+== TZ0 v2.0: 7/8 landed
+== TZ2 v1.5: 8/8 landed
+  turn: pelvis yaw push start +0.017, lift-off +0.283, touchdown +0.496, final +0.413 | in flight +0.213, push start to final +0.397 rad
+  turn: pelvis yaw push start +0.003, lift-off +0.261, touchdown +0.456, final +0.267 | in flight +0.196, push start to final +0.264 rad
+  turn: pelvis yaw push start +0.000, lift-off +0.259, touchdown +0.500, final +0.361 | in flight +0.240, push start to final +0.361 rad
+  turn: pelvis yaw push start +0.003, lift-off +0.262, touchdown +0.451, final +0.255 | in flight +0.189, push start to final +0.253 rad
+  turn: pelvis yaw push start -0.003, lift-off +0.265, touchdown +0.449, final +0.418 | in flight +0.184, push start to final +0.421 rad
+  turn: pelvis yaw push start -0.007, lift-off +0.274, touchdown +0.440, final +0.417 | in flight +0.167, push start to final +0.424 rad
+  turn: pelvis yaw push start +0.006, lift-off +0.260, touchdown +0.478, final +0.219 | in flight +0.217, push start to final +0.213 rad
+  turn: pelvis yaw push start -0.007, lift-off +0.253, touchdown +0.483, final +0.504 | in flight +0.230, push start to final +0.511 rad
+== TZ2 v2.0: 4/8 landed
+  turn: pelvis yaw push start +0.017, lift-off +0.429, touchdown +0.438, final +0.500 | in flight +0.008, push start to final +0.484 rad
+  turn: pelvis yaw push start +0.003, lift-off +0.329, touchdown +0.331, final +0.338 | in flight +0.002, push start to final +0.335 rad
+  turn: pelvis yaw push start +0.000, lift-off +0.629, touchdown +0.630, final +0.627 | in flight +0.001, push start to final +0.627 rad
+  turn: pelvis yaw push start +0.003, lift-off -0.027, touchdown -0.034, final -0.047 | in flight -0.007, push start to final -0.049 rad
+  turn: pelvis yaw push start -0.003, lift-off +0.187, touchdown +0.453, final +0.460 | in flight +0.266, push start to final +0.463 rad
+  turn: pelvis yaw push start -0.007, lift-off +0.462, touchdown +0.462, final +0.421 | in flight -0.000, push start to final +0.428 rad
+  turn: pelvis yaw push start +0.006, lift-off +0.192, touchdown +0.467, final +0.339 | in flight +0.275, push start to final +0.332 rad
+  turn: pelvis yaw push start -0.007, lift-off +0.619, touchdown +0.620, final +0.527 | in flight +0.001, push start to final +0.534 rad
+== TZ4 v1.5: 5/8 landed
+  turn: pelvis yaw push start +0.017, lift-off +0.539, touchdown +0.633, final +0.057 | in flight +0.094, push start to final +0.040 rad
+  turn: pelvis yaw push start +0.003, lift-off +0.495, touchdown +0.503, final +0.202 | in flight +0.008, push start to final +0.199 rad
+  turn: pelvis yaw push start +0.000, lift-off +0.501, touchdown +0.501, final +0.721 | in flight +0.001, push start to final +0.721 rad
+  turn: pelvis yaw push start +0.003, lift-off +0.492, touchdown +0.509, final +0.901 | in flight +0.017, push start to final +0.899 rad
+  turn: pelvis yaw push start -0.003, lift-off +0.096, touchdown +0.127, final +0.081 | in flight +0.031, push start to final +0.084 rad
+  turn: pelvis yaw push start -0.007, lift-off +0.494, touchdown +0.596, final +0.228 | in flight +0.102, push start to final +0.234 rad
+  turn: pelvis yaw push start +0.006, lift-off +0.364, touchdown +0.358, final +0.353 | in flight -0.005, push start to final +0.346 rad
+  turn: pelvis yaw push start -0.007, lift-off +0.410, touchdown +0.297, final +0.327 | in flight -0.113, push start to final +0.334 rad
+== TZ4 v2.0: 3/8 landed
+  turn: pelvis yaw push start +0.017, lift-off +1.056, touchdown +0.907, final +0.800 | in flight -0.149, push start to final +0.783 rad
+  turn: pelvis yaw push start +0.003, lift-off +0.654, touchdown +0.291, final +0.162 | in flight -0.363, push start to final +0.158 rad
+  turn: pelvis yaw push start +0.000, lift-off +0.363, touchdown +0.864, final +0.344 | in flight +0.501, push start to final +0.344 rad
+  turn: pelvis yaw push start +0.003, lift-off +2.733, touchdown +2.687, final +2.773 | in flight -0.045, push start to final +2.770 rad
+  turn: pelvis yaw push start -0.003, lift-off +0.362, touchdown +0.802, final +0.469 | in flight +0.439, push start to final +0.472 rad
+  turn: pelvis yaw push start -0.007, lift-off +0.367, touchdown +0.747, final +0.197 | in flight +0.381, push start to final +0.204 rad
+  turn: pelvis yaw push start +0.006, lift-off +0.838, touchdown +0.815, final +0.778 | in flight -0.022, push start to final +0.772 rad
+  turn: pelvis yaw push start -0.007, lift-off +0.147, touchdown +0.121, final +0.048 | in flight -0.026, push start to final +0.055 rad
+== TZ8 v1.5: 0/8 landed
+  turn: pelvis yaw push start +0.017, lift-off -0.321, touchdown -0.322, final -0.323 | in flight -0.001, push start to final -0.339 rad
+  turn: pelvis yaw push start +0.003, lift-off +2.494, touchdown +2.483, final +2.471 | in flight -0.011, push start to final +2.468 rad
+  turn: pelvis yaw push start +0.000, lift-off -2.777, touchdown -2.793, final -2.761 | in flight -0.016, push start to final -2.761 rad
+  turn: pelvis yaw push start +0.003, lift-off +2.526, touchdown +2.531, final +2.517 | in flight +0.005, push start to final +2.515 rad
+  turn: pelvis yaw push start -0.003, lift-off -1.224, touchdown -1.231, final -1.234 | in flight -0.007, push start to final -1.231 rad
+  turn: pelvis yaw push start -0.007, lift-off -1.829, touchdown -1.828, final -1.828 | in flight +0.001, push start to final -1.822 rad
+  turn: pelvis yaw push start +0.006, lift-off -1.325, touchdown -1.335, final -1.323 | in flight -0.011, push start to final -1.329 rad
+  turn: pelvis yaw push start -0.007, lift-off +0.736, touchdown -2.827, final -0.813 | in flight -3.562, push start to final -0.806 rad
+== TZ8 v2.0: 0/8 landed
+  turn: pelvis yaw push start +0.017, lift-off -1.971, touchdown -1.966, final -1.964 | in flight +0.005, push start to final -1.980 rad
+  turn: pelvis yaw push start +0.004, lift-off -0.870, touchdown -0.870, final -0.932 | in flight +0.000, push start to final -0.935 rad
+  turn: pelvis yaw push start +0.000, lift-off +0.588, touchdown +2.902, final -0.762 | in flight +2.315, push start to final -0.763 rad
+  turn: pelvis yaw push start +0.003, lift-off -1.471, touchdown -1.439, final -1.471 | in flight +0.033, push start to final -1.474 rad
+  turn: pelvis yaw push start -0.003, lift-off -0.884, touchdown -0.884, final -1.060 | in flight -0.000, push start to final -1.057 rad
+  turn: pelvis yaw push start -0.007, lift-off -1.435, touchdown -1.283, final -1.451 | in flight +0.152, push start to final -1.445 rad
+  turn: pelvis yaw push start +0.006, lift-off -2.922, touchdown -3.037, final -2.913 | in flight -0.115, push start to final -2.920 rad
+  turn: pelvis yaw push start -0.007, lift-off -1.567, touchdown -1.564, final -1.564 | in flight +0.003, push start to final -1.558 rad
+#### JT1_DONE

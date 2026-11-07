@@ -1,0 +1,19 @@
+TZ0n JUMP_V=1.0: 着地 17/48  飛ばず 0  離地速度中央値 0.377  |h_y|中央値 0.48  両足同時着地 6/48
+TZ0n JUMP_V=1.5: 着地 47/48  飛ばず 0  離地速度中央値 0.744  |h_y|中央値 0.39  両足同時着地 18/48
+TZ0n JUMP_V=2.0: 着地 45/48  飛ばず 0  離地速度中央値 1.020  |h_y|中央値 0.38  両足同時着地 24/48
+TT2n JUMP_V=1.0: 着地 25/48  飛ばず 0  離地速度中央値 0.494  |h_y|中央値 0.24  両足同時着地 1/48
+TT2n JUMP_V=1.5: 着地 48/48  飛ばず 0  離地速度中央値 0.728  |h_y|中央値 0.10  両足同時着地 0/48
+TT2n JUMP_V=2.0: 着地 46/48  飛ばず 0  離地速度中央値 1.123  |h_y|中央値 0.07  両足同時着地 0/48
+TT2 JUMP_V=1.0: 着地 28/48  飛ばず 0  離地速度中央値 0.474  |h_y|中央値 0.21  両足同時着地 1/48
+TT2 JUMP_V=1.5: 着地 48/48  飛ばず 0  離地速度中央値 0.730  |h_y|中央値 0.13  両足同時着地 0/48
+TT2 JUMP_V=2.0: 着地 45/48  飛ばず 0  離地速度中央値 1.096  |h_y|中央値 0.08  両足同時着地 0/48
+TZ0n v1.0: landed 17/48
+TZ0n v1.5: landed 47/48
+TZ0n v2.0: landed 45/48
+TT2        v1.0: landed 28/48 | lift-off h_z +1.46 |h_x| 0.66 | pelvis turned: lift-off +0.42 touchdown +0.82 final +0.86 | feet: touchdown +0.64 final +0.85 | landed only: final pelvis +0.87 feet +0.91
+TT2        v1.5: landed 48/48 | lift-off h_z +1.38 |h_x| 0.73 | pelvis turned: lift-off +0.26 touchdown +0.72 final +0.76 | feet: touchdown +0.59 final +0.73 | landed only: final pelvis +0.76 feet +0.73
+TT2        v2.0: landed 45/48 | lift-off h_z +1.28 |h_x| 1.01 | pelvis turned: lift-off +0.19 touchdown +0.65 final +0.63 | feet: touchdown +0.57 final +0.62 | landed only: final pelvis +0.64 feet +0.62
+TT2n       v1.0: landed 25/48 | lift-off h_z -1.47 |h_x| 1.05 | pelvis turned: lift-off -0.44 touchdown -0.83 final -0.89 | feet: touchdown -0.66 final -0.84 | landed only: final pelvis -0.89 feet -0.93
+TT2n       v1.5: landed 48/48 | lift-off h_z -1.38 |h_x| 0.76 | pelvis turned: lift-off -0.26 touchdown -0.71 final -0.76 | feet: touchdown -0.58 final -0.71 | landed only: final pelvis -0.76 feet -0.71
+TT2n       v2.0: landed 46/48 | lift-off h_z -1.28 |h_x| 1.08 | pelvis turned: lift-off -0.19 touchdown -0.66 final -0.63 | feet: touchdown -0.58 final -0.60 | landed only: final pelvis -0.64 feet -0.60
+#### JT5_DONE

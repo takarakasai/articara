@@ -1,0 +1,14 @@
+#!/bin/bash
+# 向きを変える跳躍の 3 回目の測り: 押しだけのランプ（JUMP_TURN_T0 は外す）で JUMP_TURN_HZ 3／4、押しの間のロールの角運動量のタスク JUMP_MOM_X_W=10 の有無。1.5・2.0、N=8、種 31415、j45。
+D=/home/takara/work/dp/articara/log/claude_g1jump_20261021; B=$D/g1_flight_probe_j45
+X='"JUMP_ABORT":"1","JUMP_PUSH_R":"0.3","QD_CLAMP":"40","DIAG_TD":"1","FLIGHT_FEET_FLAT":"1","DIAG_HX":"1","RELEASE_FIRST_OFF":"1","WBCW_CONTACT_REST":"0.1","WBCW_TRUNK_LAND":"0.03","FALL_TILT":"1.5","LAND_REF_FOLLOW":"2","AIR_ABORT_T":"0.08"'
+H=',"FLIGHT_FEET_CAPTURE_T":"0.06","KP_FLIGHT_FEET":"1000","KD_FLIGHT_FEET":"63","WBCW_TRUNK_PUSH":"0.003","WBCW_MOMENTUM":"10","WBCW_CONTACT":"100","WBCW_TRUNK_LAND_VZ":"0","JUMP_H_NAT":"1","WBCW_CONTACT_REST_LAUNCH":"1","FLIGHT_FEET_CAPTURE":"0.55","FLIGHT_TRUNK":"0","FLIGHT_FEET_W":"10","WBCW_MOMENTUM_PUSH":"1","FLIGHT_FEET_YAW":"1"'
+cd $D
+run() { TAG=$1 SEED=31415 BIN=$B CONDS=1.5,2.0 N=8 W=4 EXTRA="{$X$H,$2}" python3 jrand.py; }
+run TY3 '"T":"6","JUMP_TURN_HZ":"3","FLIGHT_FEET_TURN":"1"' &
+run TY4 '"T":"6","JUMP_TURN_HZ":"4","FLIGHT_FEET_TURN":"1"' &
+run TY3x '"T":"6","JUMP_TURN_HZ":"3","FLIGHT_FEET_TURN":"1","JUMP_MOM_X_W":"10"' &
+run TY2x '"T":"6","JUMP_TURN_HZ":"2","FLIGHT_FEET_TURN":"1","JUMP_MOM_X_W":"10"' &
+wait
+python3 tsumm.py TY2 TY2x TY3 TY3x TY4
+echo "#### JT3_DONE"
