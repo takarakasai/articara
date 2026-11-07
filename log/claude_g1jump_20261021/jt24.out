@@ -1,0 +1,19 @@
+TX90s2 JUMP_V=1.5: 着地 47/48  飛ばず 0  離地速度中央値 0.695  |h_y|中央値 0.28  両足同時着地 0/48
+TX90s2 JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 0.956  |h_y|中央値 0.52  両足同時着地 0/48
+TX90ns2 JUMP_V=1.5: 着地 48/48  飛ばず 0  離地速度中央値 0.701  |h_y|中央値 0.27  両足同時着地 0/48
+TX90ns2 JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 0.947  |h_y|中央値 0.53  両足同時着地 0/48
+TX180s2 JUMP_V=1.5: 着地 41/48  飛ばず 0  離地速度中央値 0.695  |h_y|中央値 0.28  両足同時着地 0/48
+TX180s2 JUMP_V=2.0: 着地 47/48  飛ばず 0  離地速度中央値 0.956  |h_y|中央値 0.52  両足同時着地 0/48
+TX90     v1.5: standing 46/48 | |err|<=5 37 <=10 46 | err med -0.6 |err| p90 6.3 max 8.0 | jumps {2: 17, 3: 24, 4: 5}
+TX90     v2.0: standing 48/48 | |err|<=5 47 <=10 48 | err med +0.9 |err| p90 3.8 max 5.7 | jumps {2: 44, 3: 3, 4: 1}
+TX90s2   v1.5: standing 47/48 | |err|<=5 36 <=10 47 | err med -0.8 |err| p90 5.7 max 6.9 | jumps {2: 18, 3: 25, 4: 4}
+TX90s2   v2.0: standing 48/48 | |err|<=5 46 <=10 48 | err med -0.2 |err| p90 4.4 max 6.9 | jumps {2: 39, 3: 8, 4: 1}
+TX90n    v1.5: standing 48/48 | |err|<=5 38 <=10 48 | err med +0.9 |err| p90 6.4 max 7.5 | jumps {2: 19, 3: 22, 4: 7}
+TX90n    v2.0: standing 48/48 | |err|<=5 48 <=10 48 | err med -0.8 |err| p90 4.3 max 5.0 | jumps {2: 44, 3: 4}
+TX90ns2  v1.5: standing 48/48 | |err|<=5 38 <=10 48 | err med +1.1 |err| p90 5.6 max 7.3 | jumps {2: 19, 3: 23, 4: 6}
+TX90ns2  v2.0: standing 48/48 | |err|<=5 47 <=10 48 | err med -0.8 |err| p90 4.1 max 5.2 | jumps {2: 44, 3: 3, 4: 1}
+TX180    v1.5: standing 44/48 | |err|<=5 39 <=10 44 | err med -0.5 |err| p90 5.0 max 6.8 | jumps {4: 9, 5: 29, 6: 6}
+TX180    v2.0: standing 48/48 | |err|<=5 47 <=10 48 | err med -0.5 |err| p90 4.1 max 7.1 | jumps {4: 43, 5: 5}
+TX180s2  v1.5: standing 41/48 | |err|<=5 35 <=10 41 | err med -0.7 |err| p90 5.3 max 8.2 | jumps {4: 12, 5: 24, 6: 4, 7: 1}
+TX180s2  v2.0: standing 47/48 | |err|<=5 43 <=10 47 | err med +0.1 |err| p90 4.6 max 5.6 | jumps {4: 45, 5: 1, 7: 1}
+#### JT24_DONE
