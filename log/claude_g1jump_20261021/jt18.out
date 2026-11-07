@@ -1,0 +1,24 @@
+RM3Y JUMP_V=1.5: 着地 46/48  飛ばず 0  離地速度中央値 0.694  |h_y|中央値 0.27  両足同時着地 0/48
+RM3Y JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 0.958  |h_y|中央値 0.51  両足同時着地 0/48
+RF5Y JUMP_V=1.5: 着地 44/48  飛ばず 0  離地速度中央値 0.694  |h_y|中央値 0.27  両足同時着地 0/48
+RF5Y JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 0.958  |h_y|中央値 0.51  両足同時着地 0/48
+RM5Y JUMP_V=1.5: 着地 44/48  飛ばず 0  離地速度中央値 0.694  |h_y|中央値 0.27  両足同時着地 0/48
+RM5Y JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 0.958  |h_y|中央値 0.51  両足同時着地 0/48
+RM2        v1.0: jumps done 91 of 144, all 24/48 | feet turned at re-arm +35 +50 | final (standing) med +58 deg min +44
+RM2        v1.5: jumps done 136 of 144, all 40/48 | feet turned at re-arm +43 +61 | final (standing) med +78 deg min +67
+RM3Y       v1.5: jumps done 142 of 144, all 46/48 | feet turned at re-arm +40 +59 | final (standing) med +78 deg min +68 | vs RM2 +8/-2 z +1.90
+RM2        v2.0: jumps done 138 of 144, all 43/48 | feet turned at re-arm +41 +69 | final (standing) med +96 deg min +86
+RM3Y       v2.0: jumps done 144 of 144, all 48/48 | feet turned at re-arm +46 +74 | final (standing) med +101 deg min +83 | vs RM2 +5/-0 z +2.24
+RM2x5      v1.5: jumps done 180 of 240, all 14/48 | feet turned at re-arm +43 +61 +77 +92 | final (standing) med +108 deg min +92
+RM5Y       v1.5: jumps done 230 of 240, all 44/48 | feet turned at re-arm +40 +59 +78 +99 | final (standing) med +119 deg min +101 | vs RM2x5 +33/-3 z +5.00
+RF5Y       v1.5: jumps done 233 of 240, all 44/48 | feet turned at re-arm +40 +84 +129 +173 | final (standing) med +216 deg min +206 | vs RM2x5 +33/-2 z +5.24
+RM2x5      v2.0: jumps done 141 of 240, all 0/48 | feet turned at re-arm +41 +69 +93 +112 | final (standing) med +nan deg min +nan
+RM5Y       v2.0: jumps done 240 of 240, all 48/48 | feet turned at re-arm +46 +74 +101 +128 | final (standing) med +156 deg min +140 | vs RM2x5 +48/-0 z +6.93
+RF5Y       v2.0: jumps done 240 of 240, all 48/48 | feet turned at re-arm +46 +95 +145 +194 | final (standing) med +243 deg min +227 | vs RM2x5 +48/-0 z +6.93
+RM3Y   v1.5: fails j3:push 2 || j1 roll 0.60 pitch +0.27 uneven 0/48 | j2 roll 0.10 pitch +0.37 uneven 1/48 twist 0.02 | j3 roll 0.22 pitch +0.35 uneven 3/48 twist 0.01
+RM3Y   v2.0: fails  || j1 roll 0.73 pitch +0.51 uneven 0/48 | j2 roll 0.19 pitch +0.42 uneven 0/48 twist 0.02 | j3 roll 0.33 pitch +0.58 uneven 0/48 twist 0.01
+RM5Y   v1.5: fails j3:push 2 j4:land 1 j4:push 1 || j1 roll 0.60 pitch +0.27 uneven 0/48 | j2 roll 0.10 pitch +0.37 uneven 1/48 twist 0.02 | j3 roll 0.22 pitch +0.35 uneven 3/48 twist 0.01 | j4 roll 0.24 pitch +0.31 uneven 4/46 twist 0.01 | j5 roll 0.20 pitch +0.32 uneven 2/44 twist 0.01
+RM5Y   v2.0: fails  || j1 roll 0.73 pitch +0.51 uneven 0/48 | j2 roll 0.19 pitch +0.42 uneven 0/48 twist 0.02 | j3 roll 0.33 pitch +0.58 uneven 0/48 twist 0.01 | j4 roll 0.27 pitch +0.54 uneven 0/48 twist 0.01 | j5 roll 0.31 pitch +0.52 uneven 0/48 twist 0.00
+RF5Y   v1.5: fails j4:land 2 j4:push 1 j5:land 1 || j1 roll 0.60 pitch +0.27 uneven 0/48 | j2 roll 0.66 pitch +0.23 uneven 0/48 twist 0.02 | j3 roll 0.55 pitch +0.25 uneven 0/48 twist 0.04 | j4 roll 0.46 pitch +0.20 uneven 1/48 twist 0.04 | j5 roll 0.47 pitch +0.23 uneven 0/45 twist 0.04
+RF5Y   v2.0: fails  || j1 roll 0.73 pitch +0.51 uneven 0/48 | j2 roll 0.79 pitch +0.35 uneven 0/48 twist 0.02 | j3 roll 0.76 pitch +0.44 uneven 0/48 twist 0.02 | j4 roll 0.83 pitch +0.48 uneven 0/48 twist 0.01 | j5 roll 0.76 pitch +0.50 uneven 0/48 twist 0.01
+#### JT18_DONE

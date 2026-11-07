@@ -605,6 +605,17 @@ fn main() {
     // h_z ~1.3 is stopped; the next jump starts from a narrow, staggered
     // stance (2.0: narrowest third fails 15/27, widest 5/28).
     let jump_turn_land_t = env_f64("JUMP_TURN_LAND_T", 0.0).max(0.0);
+    // JUMP_TURN_FREE_YAW=1: STANCE_TRUNK_YAW is off while the turn's yaw
+    // ramp runs (push start to touchdown). Measured 2026-11-07: with it on
+    // through the push, the jumps after the first turn 16-28 deg (first 42).
+    let jump_turn_free_yaw = flag("JUMP_TURN_FREE_YAW", false);
+    // TRUNK_RP_YAWED=1: the trunk task's roll / pitch error (ZYX Euler, about
+    // the yawed axes) is turned by the yaw into world x / y before it meets
+    // the world angular Jacobian; bt::trunk_rp_ref applies it to world x / y
+    // as is, right only near yaw 0. Measured 2026-11-07 (repeated turning
+    // jumps): the push fails once the robot faces ~90 deg whatever the jump
+    // (free yaw: the 3rd at 86 deg; with STANCE_TRUNK_YAW: the 4th at 93).
+    let trunk_rp_yawed = flag("TRUNK_RP_YAWED", false);
     let mut turn_td_hz = 0.0_f64;
     // pelvis yaw at the ramp start, lift-off and touchdown (first flight of
     // the last jump); the flight feet turn by the pelvis' yaw since the ramp
@@ -1395,11 +1406,18 @@ fn main() {
             // pitch on from 0.12 to 0.52 rad in 0.5 s (13 of 15 2.0 falls).
             let hard_land = touchdown_t.is_some() && (trunk_land_vz <= 0.0 || td_vz < -trunk_land_vz);
             let (kp_t, kd_t) = if hard_land { (kp_trunk_land, kd_trunk_land) } else { (kp_trunk, kd_trunk) };
-            let rp_ref = bt::trunk_rp_ref(roll, pitch, &st.v_ang_w, kp_t, kd_t, 0.0, 1.0);
+            let rp_ref = if trunk_rp_yawed {
+                let (sy, cy) = yaw_now.sin_cos();
+                let (er, ep) = (-kp_t * roll, -kp_t * pitch);
+                [cy * er - sy * ep - kd_t * st.v_ang_w[0], sy * er + cy * ep - kd_t * st.v_ang_w[1]]
+            } else {
+                bt::trunk_rp_ref(roll, pitch, &st.v_ang_w, kp_t, kd_t, 0.0, 1.0)
+            };
             levels.push(bt::trunk(dyn_ctx.qddot(), &j_trunk, &djv_trunk, &rp_ref, nv));
             names.push("trunk");
         }
-        let stance_yaw = !flight && stance_trunk_yaw > 0.0 && ever_landed;
+        let turn_ramp = jump_turn_hz != 0.0 && jump_v > 0.0 && t - t_launch >= jump_t_crouch + jump_t_hold - jump_turn_t0 && touchdown_t.is_none();
+        let stance_yaw = !flight && stance_trunk_yaw > 0.0 && ever_landed && !(jump_turn_free_yaw && turn_ramp);
         if (flight && flight_trunk_yaw > 0.0) || stance_yaw {
             let tgt = if flight {
                 trunk_yaw0

@@ -1,0 +1,31 @@
+RM2ns JUMP_V=1.5: 着地 2/48  飛ばず 0  離地速度中央値 0.692  |h_y|中央値 0.28  両足同時着地 0/48
+RM2ns JUMP_V=2.0: 着地 3/48  飛ばず 0  離地速度中央値 0.948  |h_y|中央値 0.53  両足同時着地 0/48
+RM2s2 JUMP_V=1.5: 着地 36/48  飛ばず 0  離地速度中央値 0.688  |h_y|中央値 0.28  両足同時着地 0/48
+RM2s2 JUMP_V=2.0: 着地 37/48  飛ばず 0  離地速度中央値 0.953  |h_y|中央値 0.52  両足同時着地 0/48
+RM2x5 JUMP_V=1.5: 着地 14/48  飛ばず 0  離地速度中央値 0.692  |h_y|中央値 0.28  両足同時着地 0/48
+RM2x5 JUMP_V=2.0: 着地 0/48  飛ばず 0  離地速度中央値 0.948  |h_y|中央値 0.53  両足同時着地 0/48
+R10CM JUMP_V=1.0: 着地 48/48  飛ばず 0  離地速度中央値 0.827  |h_y|中央値 0.20  両足同時着地 0/48
+R10CM JUMP_V=1.5: 着地 47/48  飛ばず 0  離地速度中央値 1.202  |h_y|中央値 0.33  両足同時着地 0/48
+R10CM JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 1.327  |h_y|中央値 0.59  両足同時着地 0/48
+RM2x5      v1.5: jumps done 180 of 240, all 14/48 | feet turned at re-arm +43 +61 +77 +92 | final (standing) med +108 deg min +92
+RM2x5      v2.0: jumps done 141 of 240, all 0/48 | feet turned at re-arm +41 +69 +93 +112 | final (standing) med +nan deg min +nan
+RM2s2      v1.5: jumps done 129 of 144, all 36/48 | feet turned at re-arm +42 +61 | final (standing) med +79 deg min +69
+RM2s2      v2.0: jumps done 130 of 144, all 37/48 | feet turned at re-arm +42 +69 | final (standing) med +97 deg min +85
+RM2        v1.0: jumps done 91 of 144, all 24/48 | feet turned at re-arm +35 +50 | final (standing) med +58 deg min +44
+RM2        v1.5: jumps done 136 of 144, all 40/48 | feet turned at re-arm +43 +61 | final (standing) med +78 deg min +67
+RM2ns      v1.5: jumps done 91 of 144, all 2/48 | feet turned at re-arm +41 +84 | final (standing) med +106 deg min +99 | vs RM2 +0/-39 z -6.24
+RM2        v2.0: jumps done 138 of 144, all 43/48 | feet turned at re-arm +41 +69 | final (standing) med +96 deg min +86
+RM2ns      v2.0: jumps done 86 of 144, all 3/48 | feet turned at re-arm +44 +96 | final (standing) med +160 deg min +145 | vs RM2 +1/-44 z -6.41
+RM2x5  v1.5: fails j3:push 9 j4:land 2 j4:push 6 j5:land 6 j5:push 11 || j1 roll 0.60 pitch +0.28 uneven 0/48 | j2 roll 0.20 pitch +0.32 uneven 2/48 twist 0.01 | j3 roll 0.18 pitch +0.28 uneven 9/48 twist 0.03 | j4 roll 0.21 pitch +0.39 uneven 6/39 twist 0.02 | j5 roll 0.42 pitch +0.23 uneven 16/31 twist 0.03
+RM2x5  v2.0: fails j2:push 1 j3:land 3 j4:land 8 j4:push 34 j5:land 1 j5:push 1 || j1 roll 0.73 pitch +0.53 uneven 0/48 | j2 roll 0.14 pitch +0.40 uneven 1/48 twist 0.02 | j3 roll 0.46 pitch +0.54 uneven 0/47 twist 0.01 | j4 roll 0.66 pitch -0.41 uneven 34/44 twist 0.01 | j5 roll 2.93 pitch -0.88 uneven 1/2 twist 2.65
+RM2s2  v1.5: fails j1:push 1 j2:push 1 j3:land 1 j3:push 9 || j1 roll 0.61 pitch +0.28 uneven 2/48 | j2 roll 0.25 pitch +0.27 uneven 2/47 twist 0.01 | j3 roll 0.13 pitch +0.26 uneven 9/46 twist 0.04
+RM2s2  v2.0: fails j1:push 1 j2:push 1 j3:land 7 j3:push 2 || j1 roll 0.72 pitch +0.52 uneven 1/48 | j2 roll 0.18 pitch +0.40 uneven 1/47 twist 0.02 | j3 roll 0.38 pitch +0.54 uneven 2/46 twist 0.01
+RM2ns  v1.5: fails j2:push 7 j3:land 19 j3:push 20 || j1 roll 0.60 pitch +0.28 uneven 0/48 | j2 roll 0.64 pitch +0.25 uneven 7/48 twist 0.10 | j3 roll 0.62 pitch +0.03 uneven 20/41 twist 0.06
+RM2ns  v2.0: fails j2:land 13 j3:land 16 j3:push 16 || j1 roll 0.73 pitch +0.53 uneven 0/48 | j2 roll 0.73 pitch +0.39 uneven 0/48 twist 0.14 | j3 roll 0.71 pitch -0.10 uneven 16/35 twist 0.29
+P3C12        v1.0: jumps done 142 of 144 | members by jumps done [0, 1, 0, 47] | max|feet yaw| at re-arm med 0.14 | final dx (standing) med +0.44
+R10CM        v1.0: jumps done 144 of 144 | members by jumps done [0, 0, 0, 48] | max|feet yaw| at re-arm med 0.09 | final dx (standing) med +0.42 | vs P3C12 +1/-0 z +1.00
+R10W         v1.5: jumps done 144 of 144 | members by jumps done [0, 0, 0, 48] | max|feet yaw| at re-arm med 0.15 | final dx (standing) med +0.93
+R10CM        v1.5: jumps done 143 of 144 | members by jumps done [0, 0, 1, 47] | max|feet yaw| at re-arm med 0.14 | final dx (standing) med +0.90 | vs R10W +0/-1 z -1.00
+R10W         v2.0: jumps done 141 of 144 | members by jumps done [0, 1, 1, 46] | max|feet yaw| at re-arm med 0.11 | final dx (standing) med +0.94
+R10CM        v2.0: jumps done 144 of 144 | members by jumps done [0, 0, 0, 48] | max|feet yaw| at re-arm med 0.07 | final dx (standing) med +0.93 | vs R10W +2/-0 z +1.41
+#### JT15_DONE
