@@ -1,0 +1,59 @@
+TBMs2 JUMP_V=1.0: 着地 47/48  飛ばず 0  離地速度中央値 0.813  |h_y|中央値 0.16  両足同時着地 0/48
+TBMs2 JUMP_V=1.25: 着地 48/48  飛ばず 0  離地速度中央値 1.001  |h_y|中央値 0.15  両足同時着地 0/48
+TBMs2 JUMP_V=1.5: 着地 48/48  飛ばず 0  離地速度中央値 1.193  |h_y|中央値 0.41  両足同時着地 0/48
+TBMs2 JUMP_V=1.75: 着地 48/48  飛ばず 0  離地速度中央値 1.290  |h_y|中央値 0.48  両足同時着地 0/48
+TBMs2 JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 1.326  |h_y|中央値 0.56  両足同時着地 0/48
+TBMs3 JUMP_V=1.0: 着地 47/48  飛ばず 0  離地速度中央値 0.795  |h_y|中央値 0.18  両足同時着地 0/48
+TBMs3 JUMP_V=1.25: 着地 46/48  飛ばず 0  離地速度中央値 1.007  |h_y|中央値 0.13  両足同時着地 0/48
+TBMs3 JUMP_V=1.5: 着地 48/48  飛ばず 0  離地速度中央値 1.199  |h_y|中央値 0.36  両足同時着地 0/48
+TBMs3 JUMP_V=1.75: 着地 47/48  飛ばず 0  離地速度中央値 1.290  |h_y|中央値 0.46  両足同時着地 0/48
+TBMs3 JUMP_V=2.0: 着地 46/48  飛ばず 0  離地速度中央値 1.359  |h_y|中央値 0.55  両足同時着地 0/48
+TBM JUMP_V=1.0: 着地 47/48  飛ばず 0  離地速度中央値 0.790  |h_y|中央値 0.19  両足同時着地 0/48
+TBM JUMP_V=1.25: 着地 48/48  飛ばず 0  離地速度中央値 1.030  |h_y|中央値 0.14  両足同時着地 0/48
+TBM JUMP_V=1.5: 着地 48/48  飛ばず 0  離地速度中央値 1.202  |h_y|中央値 0.34  両足同時着地 0/48
+TBM JUMP_V=1.75: 着地 47/48  飛ばず 0  離地速度中央値 1.319  |h_y|中央値 0.44  両足同時着地 0/48
+TBM JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 1.333  |h_y|中央値 0.57  両足同時着地 1/48
+TVM JUMP_V=1.0: 着地 46/48  飛ばず 2  離地速度中央値 0.597  |h_y|中央値 2.08  両足同時着地 2/48
+TVM JUMP_V=1.5: 着地 48/48  飛ばず 0  離地速度中央値 0.987  |h_y|中央値 2.77  両足同時着地 6/48
+TVM JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 1.350  |h_y|中央値 3.35  両足同時着地 10/48
+TVMs2 JUMP_V=1.0: 着地 46/48  飛ばず 1  離地速度中央値 0.589  |h_y|中央値 2.07  両足同時着地 4/48
+TVMs2 JUMP_V=1.5: 着地 48/48  飛ばず 0  離地速度中央値 0.988  |h_y|中央値 2.76  両足同時着地 10/48
+TVMs2 JUMP_V=2.0: 着地 48/48  飛ばず 0  離地速度中央値 1.340  |h_y|中央値 3.34  両足同時着地 7/48
+TBM       v1.0: LANDED 47/48 (vs TB5all5 +4/-1) fell F0 B1 | lo vx +0.502 h_y +0.18 pitch -0.25 | final dx med +0.208 max +0.249
+TBM       v1.25: LANDED 48/48 (vs TB5all5 +3/-0) fell F0 B0 | lo vx +0.540 h_y +0.14 pitch -0.28 | final dx med +0.256 max +0.289
+TBM       v1.5: LANDED 48/48 (vs TB5all5 +0/-0) fell F0 B0 | lo vx +0.623 h_y +0.34 pitch -0.28 | final dx med +0.321 max +0.356
+TBM       v1.75: LANDED 47/48 (vs TB5all5 +2/-1) fell F0 B1 | lo vx +0.633 h_y +0.44 pitch -0.29 | final dx med +0.350 max +0.389
+TBM       v2.0: LANDED 48/48 (vs TB5all5 +1/-0) fell F0 B0 | lo vx +0.655 h_y +0.56 pitch -0.30 | final dx med +0.359 max +0.412
+TBMs2     v1.0: LANDED 47/48 (vs TB5all5s2 +0/-1) fell F0 B1 | lo vx +0.494 h_y +0.15 pitch -0.28 | final dx med +0.208 max +0.257
+TBMs2     v1.25: LANDED 48/48 (vs TB5all5s2 +0/-0) fell F0 B0 | lo vx +0.536 h_y +0.14 pitch -0.25 | final dx med +0.251 max +0.286
+TBMs2     v1.5: LANDED 48/48 (vs TB5all5s2 +1/-0) fell F0 B0 | lo vx +0.615 h_y +0.40 pitch -0.31 | final dx med +0.317 max +0.353
+TBMs2     v1.75: LANDED 48/48 (vs TB5all5s2 +0/-0) fell F0 B0 | lo vx +0.629 h_y +0.47 pitch -0.31 | final dx med +0.341 max +0.384
+TBMs2     v2.0: LANDED 48/48 (vs TB5all5s2 +2/-0) fell F0 B0 | lo vx +0.636 h_y +0.55 pitch -0.30 | final dx med +0.348 max +0.421
+TBMs3     v1.0: LANDED 47/48 (vs TB5all5s3 +4/-1) fell F0 B1 | lo vx +0.498 h_y +0.16 pitch -0.26 | final dx med +0.216 max +0.240
+TBMs3     v1.25: LANDED 46/48 (vs TB5all5s3 +0/-2) fell F0 B2 | lo vx +0.542 h_y +0.13 pitch -0.25 | final dx med +0.257 max +0.287
+TBMs3     v1.5: LANDED 48/48 (vs TB5all5s3 +1/-0) fell F0 B0 | lo vx +0.627 h_y +0.36 pitch -0.31 | final dx med +0.322 max +0.355
+TBMs3     v1.75: LANDED 47/48 (vs TB5all5s3 +2/-1) fell F0 B1 | lo vx +0.630 h_y +0.46 pitch -0.31 | final dx med +0.336 max +0.390
+TBMs3     v2.0: LANDED 46/48 (vs TB5all5s3 +1/-2) fell F1 B1 | lo vx +0.658 h_y +0.55 pitch -0.29 | final dx med +0.367 max +0.421
+Traceback (most recent call last):
+  File "/home/takara/work/dp/articara/log/claude_g1jump_20261021/summ.py", line 26, in <module>
+    print(f"{tag:9s} {c}: LANDED {L.count('LANDED')}/{len(ks)} (vs {base} +{up}/-{dn}) fell F{fb.count('F')} B{fb.count('B')} | lo vx {med(vx):+.3f} h_y {med(hy):+.2f} pitch {med(pt):+.2f} | final dx med {med(dx):+.3f} max {max(dx) if dx else float('nan'):+.3f}")
+                                                                                                                                                                                                             ^^^^^^^
+  File "/home/takara/work/dp/articara/log/claude_g1jump_20261021/summ.py", line 16, in <lambda>
+    med=lambda a: st.median(a) if a else float('nan')
+                  ^^^^^^^^^^^^
+  File "/usr/lib/python3.12/statistics.py", line 614, in median
+    data = sorted(data)
+           ^^^^^^^^^^^^
+TypeError: '<' not supported between instances of 'NoneType' and 'NoneType'
+Traceback (most recent call last):
+  File "/home/takara/work/dp/articara/log/claude_g1jump_20261021/summ.py", line 26, in <module>
+    print(f"{tag:9s} {c}: LANDED {L.count('LANDED')}/{len(ks)} (vs {base} +{up}/-{dn}) fell F{fb.count('F')} B{fb.count('B')} | lo vx {med(vx):+.3f} h_y {med(hy):+.2f} pitch {med(pt):+.2f} | final dx med {med(dx):+.3f} max {max(dx) if dx else float('nan'):+.3f}")
+                                                                                                                                                                                                             ^^^^^^^
+  File "/home/takara/work/dp/articara/log/claude_g1jump_20261021/summ.py", line 16, in <lambda>
+    med=lambda a: st.median(a) if a else float('nan')
+                  ^^^^^^^^^^^^
+  File "/usr/lib/python3.12/statistics.py", line 614, in median
+    data = sorted(data)
+           ^^^^^^^^^^^^
+TypeError: '<' not supported between instances of 'NoneType' and 'NoneType'
+#### JT20_DONE
