@@ -259,7 +259,44 @@ fn main() {
     let mut fwd_s = jump_fwd_target.map_or(1.0, fwd_s_for);
     let jump_fwd_tol = env_f64("JUMP_FWD_TOL", 0.05);
     let mut fwd_reached = false;
-    let diag_fwd_feet = jump_fwd_target.is_some() || flag("DIAG_FWD_FEET", false);
+    // JUMP_BOX_GAP=g (m, unset = off; needs JUMP_BOX, JUMP_FWD_TAB and
+    // JUMP_REPEAT): hop on the flat (scale read off JUMP_FWD_TAB) until the
+    // gap from the front toe (sole centre + SOLE_HALF_L) to the box's front
+    // face is within JUMP_BOX_GAP_TOL (default 0.03) of g, then jump onto the
+    // box at scale JUMP_BOX_S (default 1); no more jumps once a landing is on
+    // the box. Measured 2026-11-08 (TB6 single jump, tuck 0.05, 5 cm box):
+    // gap 0.03 clips the toe on the way up (1.5 8/16), 0.08 stands 14/16 at
+    // both 1.5 and 2.0, 0.13 lands the heel short (1.5 0/8).
+    let jump_box_gap = std::env::var("JUMP_BOX_GAP").ok().map(|s| s.trim().parse::<f64>().unwrap());
+    let jump_box_gap_tol = env_f64("JUMP_BOX_GAP_TOL", 0.03);
+    let jump_box_s = env_f64("JUMP_BOX_S", 1.0);
+    // JUMP_BOX_TUCK=d (m, 0 = off): FLIGHT_FEET_TUCK added on the jump onto
+    // the box only (JUMP_BOX_GAP). Measured 2026-11-08: with the tuck on
+    // every jump, the short backward hops that close the gap fell (5 cm box
+    // 0.20 m ahead, 2.0: 15/16 fell on the first hop).
+    let jump_box_tuck = env_f64("JUMP_BOX_TUCK", 0.0);
+    // JUMP_BOX_STIFF=1: the jump onto the box crouches on the stiff contact
+    // like a first jump, even with JUMP_REPEAT_SOFT_CROUCH. Measured
+    // 2026-11-08 (5 cm box after flat hops, 2.0): on the soft contact the
+    // CoM starts the push +0.018-0.021 m ahead of the soles' midpoint for a
+    // reference of +0.061 (first jump: +0.040 for +0.050), lift-off vx
+    // 0.44-0.55 against 0.62, and the heel lands short of the box edge.
+    let jump_box_stiff = flag("JUMP_BOX_STIFF", false);
+    let mut box_jump_now = false;
+    // (toe to box, scale, onto the box)
+    let box_gap_s = move |toe_x: f64| -> (f64, f64, bool) {
+        let (bx, g) = (jump_box.expect("JUMP_BOX_GAP needs JUMP_BOX").0, jump_box_gap.unwrap());
+        let gap = bx - toe_x;
+        if (gap - g).abs() <= jump_box_gap_tol { (gap, jump_box_s, true) } else { (gap, fwd_s_for(gap - g), false) }
+    };
+    let sole_cx = prof.sole_centre_x;
+    let front_toe_x = move |o_mi: &[misarta::se3::SE3<f64>]| -> f64 {
+        (0..2)
+            .map(|k| misarta::se3::translation(&o_mi[feet[k]])[0] + misarta::se3::rotation_matrix(&o_mi[feet[k]])[(0, 0)] * sole_cx)
+            .fold(f64::NEG_INFINITY, f64::max)
+            + sole_half_l
+    };
+    let diag_fwd_feet = jump_fwd_target.is_some() || jump_box_gap.is_some() || flag("DIAG_FWD_FEET", false);
     if let Some(dx) = jump_fwd_target {
         println!("jump forward target {dx:+.3} m: scale {fwd_s:.4} -> JUMP_VX {:.3} JUMP_LEAN {:.4}", jump_vx * fwd_s, jump_lean * fwd_s);
     }
@@ -837,6 +874,12 @@ fn main() {
             let x = soles_mid_x(&st.data.oMi, &feet, prof.sole_centre_x);
             fwd_feet_last = x;
             if t >= t_launch {
+                if fwd_feet0.is_none() && jump_box_gap.is_some() {
+                    let (gap, s, onto) = box_gap_s(front_toe_x(&st.data.oMi));
+                    (fwd_s, box_jump_now) = (s, onto);
+                    push_cfg.vx_target = env_f64("JUMP_MPC_VX", jump_vx * fwd_s);
+                    println!("  [box-gap] t={t:.3} toe to box {gap:+.3} m: scale {fwd_s:.4}");
+                }
                 fwd_feet0.get_or_insert(x);
             }
         }
@@ -986,6 +1029,24 @@ fn main() {
                     push_cfg.vx_target = jump_vx * fwd_s;
                 }
                 println!("  [fwd-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: scale {fwd_s:.4}");
+            }
+        }
+        if let (Some(_), Some((_, bh, _))) = (jump_box_gap, jump_box)
+            && !fwd_reached
+            && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
+            && let Some((tl, _, _)) = land
+            && t - tl >= jump_repeat_after
+        {
+            if ground_dz > 0.5 * bh {
+                fwd_reached = true;
+                println!("  [box-gap] t={t:.3} on the box ({ground_dz:+.3} m): no more jumps");
+            } else {
+                let (gap, s, onto) = box_gap_s(front_toe_x(&data.oMi));
+                (fwd_s, box_jump_now) = (s, onto);
+                if !jump_mpc_vx_set {
+                    push_cfg.vx_target = jump_vx * fwd_s;
+                }
+                println!("  [box-gap] t={t:.3} toe to box {gap:+.3} m: scale {fwd_s:.4}");
             }
         }
         if jump_repeat > repeats_done && !turn_reached && !fwd_reached && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
@@ -1836,7 +1897,7 @@ fn main() {
                 tuck_adapt = Some((t0f, d));
                 println!("  [tuck] t={t:.3} com z {:.4} vz {:+.3}: feet meet the floor at com z {z_nat:.4}, ballistic at {tf:.3} s {z_star:.4} -> tuck {d:.4}", com.z, com_vel.z);
             }
-            let tuck = flight_feet_tuck + if flight_feet_tuck_tf > 0.0 { tuck_adapt.map_or(0.0, |x| x.1) } else { 0.0 };
+            let tuck = flight_feet_tuck + if box_jump_now { jump_box_tuck } else { 0.0 } + if flight_feet_tuck_tf > 0.0 { tuck_adapt.map_or(0.0, |x| x.1) } else { 0.0 };
             if tuck != 0.0 && let Some(t0f) = flight_t0 {
                 let b = ((t - t0f) / flight_feet_tuck_t).clamp(0.0, 1.0);
                 let b = b * b * (3.0 - 2.0 * b);
@@ -1958,7 +2019,7 @@ fn main() {
         } else {
             touchdown_t.is_some_and(|t0| t - t0 < wbcw_contact_rest_after)
         };
-        let jump_from = if rest_launch && !(jump_repeat_soft_crouch && repeats_done > 0) { t_launch } else { t_launch + jump_t_crouch + jump_t_hold };
+        let jump_from = if rest_launch && !(jump_repeat_soft_crouch && repeats_done > 0 && !(jump_box_stiff && box_jump_now)) { t_launch } else { t_launch + jump_t_crouch + jump_t_hold };
         let in_jump = (jump_v > 0.0 && push_end.is_none() && t >= jump_from) || landed_busy;
         let contact_rest = wbcw_contact_rest.is_some() && !in_jump;
         if weighted {
@@ -2239,6 +2300,9 @@ fn main() {
                 repeats_done + 1
             ),
             None => println!("  forward: soles moved {d:+.3} m at the end"),
+        }
+        if jump_box_gap.is_some() {
+            println!("  box gap: {} jumps, on the box {fwd_reached}", repeats_done + 1);
         }
     }
     if jump_turn_hz != 0.0 {

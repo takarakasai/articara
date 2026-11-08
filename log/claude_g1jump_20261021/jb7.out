@@ -1,0 +1,31 @@
+JG20 JUMP_V=1.5: 着地 7/16  飛ばず 0  離地速度中央値 0.680  |h_y|中央値 0.52  両足同時着地 11/16
+JG20 JUMP_V=2.0: 着地 1/16  飛ばず 0  離地速度中央値 0.993  |h_y|中央値 0.54  両足同時着地 8/16
+JG40 JUMP_V=1.5: 着地 7/16  飛ばず 0  離地速度中央値 0.999  |h_y|中央値 0.30  両足同時着地 0/16
+JG40 JUMP_V=2.0: 着地 2/16  飛ばず 0  離地速度中央値 1.189  |h_y|中央値 0.44  両足同時着地 0/16
+JG30 JUMP_V=1.5: 着地 9/16  飛ばず 0  離地速度中央値 0.732  |h_y|中央値 0.56  両足同時着地 6/16
+JG30 JUMP_V=2.0: 着地 12/16  飛ばず 0  離地速度中央値 1.103  |h_y|中央値 0.45  両足同時着地 4/16
+JG60 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 1.175  |h_y|中央値 0.43  両足同時着地 0/16
+JG60 JUMP_V=2.0: 着地 8/16  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.52  両足同時着地 0/16
+JG25 JUMP_V=1.5: 着地 15/16  飛ばず 0  離地速度中央値 1.208  |h_y|中央値 0.36  両足同時着地 0/16
+JG25 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.52  両足同時着地 0/16
+JG20      v1.5: standing 7/16 | soles dx med +0.248 sd 0.025 [+0.203,+0.280] | lo vx med -0.070
+JG20      v2.0: standing 1/16 | soles dx med +0.260 sd 0.000 [+0.260,+0.260] | lo vx med -0.059
+JG25      v1.5: standing 15/16 | soles dx med +0.333 sd 0.019 [+0.273,+0.355] | lo vx med +0.622
+JG25      v2.0: standing 15/16 | soles dx med +0.367 sd 0.033 [+0.318,+0.419] | lo vx med +0.633
+JG30      v1.5: standing 9/16 | soles dx med +0.362 sd 0.024 [+0.317,+0.388] | lo vx med +0.119
+JG30      v2.0: standing 12/16 | soles dx med +0.363 sd 0.032 [+0.316,+0.413] | lo vx med +0.166
+JG40      v1.5: standing 7/16 | soles dx med +0.457 sd 0.017 [+0.422,+0.477] | lo vx med +0.274
+JG40      v2.0: standing 2/16 | soles dx med +0.470 sd 0.021 [+0.448,+0.491] | lo vx med +0.310
+JG60      v1.5: standing 13/16 | soles dx med +0.661 sd 0.025 [+0.573,+0.672] | lo vx med +0.647
+JG60      v2.0: standing 8/16 | soles dx med +0.683 sd 0.017 [+0.652,+0.703] | lo vx med +0.625
+JG20   v1.5: standing 7/16 on box 7 | jumps {2: 7} | gap at box jump med +0.110 [+0.104,+0.113] | falls m02:1hop m03:1hop m05:2box m06:2box m08:1hop m11:1hop m13:1hop m14:1hop m15:1hop
+JG20   v2.0: standing 1/16 on box 1 | jumps {2: 1} | gap at box jump med +0.107 [+0.103,+0.112] | falls m00:1hop m01:1hop m02:1hop m03:1hop m04:2box m05:1hop m06:1hop m07:1hop m09:1hop m10:1hop m11:1hop m12:1hop m13:1hop m14:1hop m15:1hop
+JG25   v1.5: standing 15/16 on box 15 | jumps {1: 15} | gap at box jump med +0.117 [+0.114,+0.121] | falls m03:1box
+JG25   v2.0: standing 15/16 on box 15 | jumps {1: 15} | gap at box jump med +0.117 [+0.114,+0.121] | falls m03:1box
+JG30   v1.5: standing 9/16 on box 9 | jumps {2: 9} | gap at box jump med +0.115 [+0.075,+0.119] | falls m02:2box m03:1hop m04:2hop m07:2hop m08:2hop m10:1hop m14:2box
+JG30   v2.0: standing 12/16 on box 12 | jumps {2: 10, 3: 2} | gap at box jump med +0.107 [+0.077,+0.118] | falls m08:2hop m11:2hop m12:2box m15:2box
+JG40   v1.5: standing 7/16 on box 7 | jumps {2: 2, 3: 5} | gap at box jump med +0.100 [+0.082,+0.109] | falls m00:3hop m02:2hop m03:2hop m07:2hop m09:3hop m12:3box m13:2hop m14:2hop m15:2hop
+JG40   v2.0: standing 2/16 on box 2 | jumps {2: 2} | gap at box jump med +0.105 [+0.078,+0.114] | falls m01:2hop m02:2box m03:2hop m04:2hop m05:2hop m07:1hop m08:2hop m09:2box m10:4box m11:2hop m12:2hop m13:2hop m14:2box m15:2box
+JG60   v1.5: standing 13/16 on box 13 | jumps {2: 11, 3: 2} | gap at box jump med +0.090 [+0.076,+0.122] | falls m02:2box m04:2hop m14:2box
+JG60   v2.0: standing 8/16 on box 8 | jumps {2: 6, 3: 2} | gap at box jump med +0.101 [+0.078,+0.119] | falls m00:2hop m03:3box m04:3box m08:2hop m09:2box m11:2hop m14:2box m15:2hop
+#### JB7_DONE
