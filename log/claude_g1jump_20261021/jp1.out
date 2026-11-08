@@ -1,0 +1,37 @@
+PX125 JUMP_V=1.0: 着地 16/16  飛ばず 0  離地速度中央値 0.815  |h_y|中央値 0.15  両足同時着地 0/16
+PX125 JUMP_V=1.5: 着地 11/16  飛ばず 0  離地速度中央値 1.161  |h_y|中央値 0.41  両足同時着地 0/16
+PX125 JUMP_V=2.0: 着地 4/16  飛ばず 0  離地速度中央値 1.236  |h_y|中央値 0.28  両足同時着地 0/16
+PX000 JUMP_V=1.0: 着地 10/16  飛ばず 0  離地速度中央値 0.413  |h_y|中央値 0.47  両足同時着地 2/16
+PX000 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 0.740  |h_y|中央値 0.40  両足同時着地 5/16
+PX000 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.011  |h_y|中央値 0.37  両足同時着地 7/16
+PX025 JUMP_V=1.0: 着地 10/16  飛ばず 5  離地速度中央値 0.690  |h_y|中央値 0.50  両足同時着地 0/16
+PX025 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 0.680  |h_y|中央値 0.56  両足同時着地 1/16
+PX025 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 0.998  |h_y|中央値 0.51  両足同時着地 6/16
+PX050 JUMP_V=1.0: 着地 16/16  飛ばず 0  離地速度中央値 0.709  |h_y|中央値 0.28  両足同時着地 1/16
+PX050 JUMP_V=1.5: 着地 15/16  飛ばず 0  離地速度中央値 0.915  |h_y|中央値 0.38  両足同時着地 4/16
+PX050 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.109  |h_y|中央値 0.59  両足同時着地 5/16
+PX075 JUMP_V=1.0: 着地 16/16  飛ばず 0  離地速度中央値 0.769  |h_y|中央値 0.23  両足同時着地 0/16
+PX075 JUMP_V=1.5: 着地 15/16  飛ばず 0  離地速度中央値 1.203  |h_y|中央値 0.31  両足同時着地 0/16
+PX075 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.204  |h_y|中央値 0.47  両足同時着地 0/16
+PX100 JUMP_V=1.0: 着地 16/16  飛ばず 0  離地速度中央値 0.796  |h_y|中央値 0.19  両足同時着地 0/16
+PX100 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 1.202  |h_y|中央値 0.35  両足同時着地 0/16
+PX100 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.381  |h_y|中央値 0.52  両足同時着地 1/16
+PX000     v1.0: LANDED 10/16 (vs TBM +0/-6) fell F0 B6 | lo vx -0.178 h_y +0.47 pitch -0.36 | final dx med -0.073 max +0.020
+PX000     v1.5: LANDED 16/16 (vs TBM +0/-0) fell F0 B0 | lo vx -0.236 h_y +0.35 pitch -0.33 | final dx med -0.102 max -0.093
+PX000     v2.0: LANDED 15/16 (vs TBM +0/-1) fell F0 B1 | lo vx -0.279 h_y +0.37 pitch -0.31 | final dx med -0.129 max -0.124
+PX025     v1.0: LANDED 10/16 (vs TBM +0/-6) fell F0 B1 | lo vx +0.122 h_y +0.35 pitch -0.32 | final dx med +0.093 max +0.107
+PX025     v1.5: LANDED 16/16 (vs TBM +0/-0) fell F0 B0 | lo vx -0.057 h_y +0.56 pitch -0.39 | final dx med -0.018 max -0.007
+PX025     v2.0: LANDED 16/16 (vs TBM +0/-0) fell F0 B0 | lo vx -0.044 h_y +0.49 pitch -0.35 | final dx med -0.014 max +0.015
+PX050     v1.0: LANDED 16/16 (vs TBM +0/-0) fell F0 B0 | lo vx +0.372 h_y +0.28 pitch -0.27 | final dx med +0.149 max +0.196
+PX050     v1.5: LANDED 15/16 (vs TBM +0/-1) fell F0 B1 | lo vx +0.179 h_y +0.34 pitch -0.42 | final dx med +0.073 max +0.205
+PX050     v2.0: LANDED 16/16 (vs TBM +0/-0) fell F0 B0 | lo vx +0.206 h_y +0.58 pitch -0.40 | final dx med +0.104 max +0.136
+PX075     v1.0: LANDED 16/16 (vs TBM +0/-0) fell F0 B0 | lo vx +0.469 h_y +0.22 pitch -0.25 | final dx med +0.200 max +0.234
+PX075     v1.5: LANDED 15/16 (vs TBM +0/-1) fell F1 B0 | lo vx +0.496 h_y +0.29 pitch -0.34 | final dx med +0.249 max +0.278
+PX075     v2.0: LANDED 16/16 (vs TBM +0/-0) fell F0 B0 | lo vx +0.499 h_y +0.46 pitch -0.36 | final dx med +0.256 max +0.333
+PX100     v1.0: LANDED 16/16 (vs TBM +0/-0) fell F0 B0 | lo vx +0.504 h_y +0.19 pitch -0.26 | final dx med +0.207 max +0.244
+PX100     v1.5: LANDED 16/16 (vs TBM +0/-0) fell F0 B0 | lo vx +0.618 h_y +0.34 pitch -0.31 | final dx med +0.319 max +0.349
+PX100     v2.0: LANDED 16/16 (vs TBM +0/-0) fell F0 B0 | lo vx +0.653 h_y +0.50 pitch -0.30 | final dx med +0.349 max +0.412
+PX125     v1.0: LANDED 16/16 (vs TBM +0/-0) fell F0 B0 | lo vx +0.499 h_y +0.13 pitch -0.27 | final dx med +0.211 max +0.245
+PX125     v1.5: LANDED 11/16 (vs TBM +0/-5) fell F4 B1 | lo vx +0.687 h_y +0.40 pitch -0.28 | final dx med +0.356 max +0.395
+PX125     v2.0: LANDED 4/16 (vs TBM +0/-12) fell F0 B12 | lo vx -0.345 h_y -0.21 pitch -0.32 | final dx med -0.098 max -0.034
+#### JP1_DONE
