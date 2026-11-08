@@ -1,0 +1,157 @@
+  File "<string>", line 1
+  File "<string>", line 1
+    print(085/100)
+    print(060/100)
+          ^
+          ^
+SyntaxError: leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers
+SyntaxError: leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers
+  File "<string>", line 1
+    print(025/100)
+          ^
+SyntaxError: leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers
+  File "<string>", line 1
+    print(050/100)
+          ^
+SyntaxError: leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers
+  File "<string>", line 1
+  File "<string>", line 1
+    print(075/100)
+          ^
+    print(070/100)
+          ^
+SyntaxError: leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers
+SyntaxError: leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers
+  File "<string>", line 1
+    print(065/100)
+          ^
+SyntaxError: leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers
+  File "<string>", line 1
+    print(040/100)
+          ^
+SyntaxError: leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers
+  File "<string>", line 1
+    print(055/100)
+          ^
+SyntaxError: leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers
+  File "<string>", line 1
+    s=; print(f'1.0:{1.0*s:.4f},1.5:{1.2*s:.4f},2.0:{1.6*s:.4f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:{1.0*s:.4f},1.5:{1.2*s:.4f},2.0:{1.6*s:.4f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:{1.0*s:.4f},1.5:{1.2*s:.4f},2.0:{1.6*s:.4f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:{1.0*s:.4f},1.5:{1.2*s:.4f},2.0:{1.6*s:.4f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:{1.0*s:.4f},1.5:{1.2*s:.4f},2.0:{1.6*s:.4f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:{1.0*s:.4f},1.5:{1.2*s:.4f},2.0:{1.6*s:.4f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:{1.0*s:.4f},1.5:{1.2*s:.4f},2.0:{1.6*s:.4f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:{1.0*s:.4f},1.5:{1.2*s:.4f},2.0:{1.6*s:.4f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:{1.0*s:.4f},1.5:{1.2*s:.4f},2.0:{1.6*s:.4f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:0,1.5:{0.045*s:.5f},2.0:{0.06*s:.5f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:0,1.5:{0.045*s:.5f},2.0:{0.06*s:.5f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:0,1.5:{0.045*s:.5f},2.0:{0.06*s:.5f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:0,1.5:{0.045*s:.5f},2.0:{0.06*s:.5f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:0,1.5:{0.045*s:.5f},2.0:{0.06*s:.5f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:0,1.5:{0.045*s:.5f},2.0:{0.06*s:.5f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:0,1.5:{0.045*s:.5f},2.0:{0.06*s:.5f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:0,1.5:{0.045*s:.5f},2.0:{0.06*s:.5f}')
+      ^
+SyntaxError: invalid syntax
+  File "<string>", line 1
+    s=; print(f'1.0:0,1.5:{0.045*s:.5f},2.0:{0.06*s:.5f}')
+      ^
+SyntaxError: invalid syntax
+PF070 JUMP_V=1.5: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF070 JUMP_V=2.0: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF040 JUMP_V=1.5: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF040 JUMP_V=2.0: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF075 JUMP_V=1.5: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF075 JUMP_V=2.0: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF085 JUMP_V=1.5: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF085 JUMP_V=2.0: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF050 JUMP_V=1.5: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF050 JUMP_V=2.0: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF065 JUMP_V=1.5: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF065 JUMP_V=2.0: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF025 JUMP_V=1.5: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF025 JUMP_V=2.0: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF055 JUMP_V=1.5: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF055 JUMP_V=2.0: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF060 JUMP_V=1.5: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF060 JUMP_V=2.0: 着地 0/16  飛ばず 16  離地速度中央値 nan  |h_y|中央値 nan  両足同時着地 0/16
+PF000 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 0.740  |h_y|中央値 0.40  両足同時着地 5/16
+PF000 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.011  |h_y|中央値 0.37  両足同時着地 7/16
+PF110 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 1.180  |h_y|中央値 0.36  両足同時着地 0/16
+PF110 JUMP_V=2.0: 着地 11/16  飛ばず 0  離地速度中央値 1.377  |h_y|中央値 0.54  両足同時着地 0/16
+PF100 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 1.202  |h_y|中央値 0.35  両足同時着地 0/16
+PF100 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.381  |h_y|中央値 0.52  両足同時着地 1/16
+PF000     v1.5: standing 16/16 | soles dx med -0.112 sd 0.004 [-0.120,-0.107] | lo vx med -0.236
+PF000     v2.0: standing 15/16 | soles dx med -0.148 sd 0.004 [-0.156,-0.141] | lo vx med -0.279
+PF025     v1.5: standing 0/0
+PF025     v2.0: standing 0/0
+PF040     v1.5: standing 0/0
+PF040     v2.0: standing 0/0
+PF050     v1.5: standing 0/0
+PF050     v2.0: standing 0/0
+PF055     v1.5: standing 0/0
+PF055     v2.0: standing 0/0
+PF060     v1.5: standing 0/0
+PF060     v2.0: standing 0/0
+PF065     v1.5: standing 0/0
+PF065     v2.0: standing 0/0
+PF070     v1.5: standing 0/0
+PF070     v2.0: standing 0/0
+PF075     v1.5: standing 0/0
+PF075     v2.0: standing 0/0
+PF085     v1.5: standing 0/0
+PF085     v2.0: standing 0/0
+PF100     v1.5: standing 16/16 | soles dx med +0.334 sd 0.016 [+0.300,+0.363] | lo vx med +0.618
+PF100     v2.0: standing 16/16 | soles dx med +0.362 sd 0.040 [+0.266,+0.430] | lo vx med +0.653
+PF110     v1.5: standing 16/16 | soles dx med +0.347 sd 0.018 [+0.311,+0.395] | lo vx med +0.644
+PF110     v2.0: standing 11/16 | soles dx med +0.391 sd 0.032 [+0.374,+0.492] | lo vx med +0.667
+#### JP2_DONE

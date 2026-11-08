@@ -217,6 +217,31 @@ fn main() {
     if std::env::var("JUMP_VX_TAB").is_ok() || std::env::var("JUMP_LEAN_TAB").is_ok() {
         println!("jump tables: JUMP_V {jump_v} -> JUMP_VX {jump_vx:.3} JUMP_LEAN {jump_lean:.4}");
     }
+    // JUMP_FWD_TARGET (m, unset = off): a forward jump that aims the soles'
+    // midpoint this far ahead of where it stood at T_LAUNCH. JUMP_VX and
+    // JUMP_LEAN are scaled by one factor s, read backwards off JUMP_FWD_TAB
+    // ("V|s:dx,s:dx,...;V|..."; the soles' move one jump makes against s,
+    // per JUMP_V; piecewise linear, interpolated in JUMP_V, clamped).
+    // With JUMP_REPEAT, the jumps go on until, at a re-arm, the soles are
+    // within JUMP_FWD_TOL m (default 0.05) of the target; each one's s is
+    // read off the table for the distance still to go.
+    // DIAG_FWD_FEET=1 prints the soles' move without a target. Measured
+    // 2026-11-08 (TB6 tables times s, final CoM dx): 1.5 -0.10 / +0.07 /
+    // +0.32 m and 2.0 -0.13 / +0.10 / +0.35 m at s 0 / 0.5 / 1.
+    let jump_fwd_target = std::env::var("JUMP_FWD_TARGET").ok().map(|s| s.trim().parse::<f64>().unwrap());
+    let jump_fwd_tab = vtab("JUMP_FWD_TAB");
+    let fwd_s_for = |dx: f64| -> f64 {
+        let tab = jump_fwd_tab.as_ref().expect("JUMP_FWD_TARGET needs JUMP_FWD_TAB");
+        let ss: Vec<(f64, f64)> = tab.iter().map(|(v, pts)| (*v, inv_pw(pts, dx))).collect();
+        interp(&ss, jump_v)
+    };
+    let mut fwd_s = jump_fwd_target.map_or(1.0, fwd_s_for);
+    let jump_fwd_tol = env_f64("JUMP_FWD_TOL", 0.05);
+    let mut fwd_reached = false;
+    let diag_fwd_feet = jump_fwd_target.is_some() || flag("DIAG_FWD_FEET", false);
+    if let Some(dx) = jump_fwd_target {
+        println!("jump forward target {dx:+.3} m: scale {fwd_s:.4} -> JUMP_VX {:.3} JUMP_LEAN {:.4}", jump_vx * fwd_s, jump_lean * fwd_s);
+    }
     let mut push_end: Option<f64> = None;
     // JUMP_RELEASE=1: after the push reaches JUMP_V, command the CoM to fall
     // at g (zero ground force) with the contact rows still in, and enter
@@ -310,7 +335,7 @@ fn main() {
     let jump_mpc_meas = flag("JUMP_MPC_MEAS", false);
     let diag_mpc = flag("DIAG_MPC", false);
     let mut push_cfg = PushPlanCfg {
-        vx_target: env_f64("JUMP_MPC_VX", jump_vx),
+        vx_target: env_f64("JUMP_MPC_VX", jump_vx * fwd_s),
         w_v: env_f64("JUMP_MPC_WV", 1e3),
         w_h: env_f64("JUMP_MPC_WH", 1e2),
         w_h_run: env_f64("JUMP_MPC_WH_RUN", 1.0),
@@ -323,6 +348,7 @@ fn main() {
         x_lo: 0.0,
         x_hi: 0.0,
     };
+    let jump_mpc_vx_set = std::env::var("JUMP_MPC_VX").is_ok();
     let jump_mpc_cop_margin = env_f64("JUMP_MPC_COP_MARGIN", 0.02);
     let jump_mpc_x_fwd = env_f64("JUMP_MPC_X_FWD", 0.12);
     let jump_mpc_x_back = env_f64("JUMP_MPC_X_BACK", 0.06);
@@ -744,6 +770,8 @@ fn main() {
     // forward jump summary: CoM x at T_LAUNCH, first lift-off vx, first
     // touchdown CoM x, last CoM x
     let (mut fwd_x0, mut fwd_lo_vx, mut fwd_td_x, mut fwd_last_x) = (None::<f64>, None::<f64>, None::<f64>, 0.0_f64);
+    // soles' midpoint x at T_LAUNCH and now (DIAG_FWD_FEET / JUMP_FWD_TARGET)
+    let (mut fwd_feet0, mut fwd_feet_last) = (None::<f64>, f64::NAN);
 
     for tick in 0..n_ticks {
         let t = tick as f64 * dt;
@@ -767,6 +795,13 @@ fn main() {
             fwd_x0.get_or_insert(com.x);
         }
         fwd_last_x = com.x;
+        if diag_fwd_feet {
+            let x = soles_mid_x(&st.data.oMi, &feet, prof.sole_centre_x);
+            fwd_feet_last = x;
+            if t >= t_launch {
+                fwd_feet0.get_or_insert(x);
+            }
+        }
 
         if jump_v <= 0.0 && !launched && t >= t_launch {
             launched = true;
@@ -895,7 +930,27 @@ fn main() {
                 println!("  [turn-target] t={t:.3} turned {:+.1} deg, {:+.1} to go: h_z {turn_hz_now:+.3}", done.to_degrees(), rem.to_degrees());
             }
         }
-        if jump_repeat > repeats_done && !turn_reached && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
+        if let Some(tgt) = jump_fwd_target
+            && !fwd_reached
+            && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
+            && let Some((tl, _, _)) = land
+            && t - tl >= jump_repeat_after
+            && let Some(x0) = fwd_feet0
+        {
+            let done = soles_mid_x(&data.oMi, &feet, prof.sole_centre_x) - x0;
+            let rem = tgt - done;
+            if rem.abs() < jump_fwd_tol {
+                fwd_reached = true;
+                println!("  [fwd-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: no more jumps");
+            } else {
+                fwd_s = fwd_s_for(rem);
+                if !jump_mpc_vx_set {
+                    push_cfg.vx_target = jump_vx * fwd_s;
+                }
+                println!("  [fwd-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: scale {fwd_s:.4}");
+            }
+        }
+        if jump_repeat > repeats_done && !turn_reached && !fwd_reached && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
         {
@@ -1298,10 +1353,10 @@ fn main() {
                         };
                         rearm_shift = 0.5 * (sole(0) + sole(1)) + off - c_ref.xy();
                     }
-                    let lean_x = jump_lean + rearm_shift.x;
+                    let lean_x = jump_lean * fwd_s + rearm_shift.x;
                     let (mut x, mut vx, mut ax) = quintic(0.0, 0.0, lean_x, jump_t_crouch, s);
                     let (y, vy, ay) = quintic(0.0, 0.0, rearm_shift.y, jump_t_crouch, s);
-                    let kx = jump_vx / jump_v;
+                    let kx = jump_vx * fwd_s / jump_v;
                     let s_push = s - jump_t_crouch - jump_t_hold;
                     if jump_repeat > 0 && s_push > 0.0 && s_push <= dt + 1e-9 {
                         let sole = |k: usize| {
@@ -2114,6 +2169,17 @@ fn main() {
             fwd_lo_vx.unwrap_or(f64::NAN), fwd_td_x.map_or(f64::NAN, |x| x - x0), fwd_last_x - x0
         );
     }
+    if let Some(x0) = fwd_feet0 {
+        let d = fwd_feet_last - x0;
+        match jump_fwd_target {
+            Some(tgt) => println!(
+                "  forward target {tgt:+.3} m (last scale {fwd_s:.4}): soles moved {d:+.3} m at the end (error {:+.3}), {} jumps, reached {fwd_reached}",
+                d - tgt,
+                repeats_done + 1
+            ),
+            None => println!("  forward: soles moved {d:+.3} m at the end"),
+        }
+    }
     if jump_turn_hz != 0.0 {
         println!(
             "  turn: pelvis yaw push start {:+.3}, lift-off {:+.3}, touchdown {:+.3}, final {:+.3} | in flight {:+.3}, push start to final {:+.3} rad",
@@ -2337,6 +2403,56 @@ fn plan_push(
 
 /// The soles' mean yaw (rad), from the feet frames.
 #[cfg(feature = "mujoco")]
+/// x of the soles' midpoint (sole centres).
+fn soles_mid_x(o_mi: &[misarta::se3::SE3<f64>], feet: &[usize; 2], sole_centre_x: f64) -> f64 {
+    let sole = |k: usize| {
+        let o = misarta::se3::translation(&o_mi[feet[k]]);
+        let m = misarta::se3::rotation_matrix(&o_mi[feet[k]]);
+        o[0] + m[(0, 0)] * sole_centre_x
+    };
+    0.5 * (sole(0) + sole(1))
+}
+
+/// A table per JUMP_V, "V|a:b,a:b,...;V|...", sorted by V and by a.
+fn vtab(key: &str) -> Option<Vec<(f64, Vec<(f64, f64)>)>> {
+    let s = std::env::var(key).ok()?;
+    let mut t: Vec<(f64, Vec<(f64, f64)>)> = s
+        .split(';')
+        .map(|blk| {
+            let (v, pts) = blk.split_once('|').unwrap_or_else(|| panic!("{key}: expected V|a:b,..., got {blk:?}"));
+            let mut pts: Vec<(f64, f64)> = pts
+                .split(',')
+                .map(|p| {
+                    let (a, b) = p.split_once(':').unwrap_or_else(|| panic!("{key}: expected a:b, got {p:?}"));
+                    (a.trim().parse().unwrap(), b.trim().parse().unwrap())
+                })
+                .collect();
+            pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+            (v.trim().parse().unwrap(), pts)
+        })
+        .collect();
+    t.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Some(t)
+}
+
+/// The a at which the piecewise-linear b(a) (rising) reaches y, clamped.
+fn inv_pw(pts: &[(f64, f64)], y: f64) -> f64 {
+    let (mut lo, mut hi) = (pts[0], pts[pts.len() - 1]);
+    if y <= lo.1 {
+        return lo.0;
+    }
+    if y >= hi.1 {
+        return hi.0;
+    }
+    for w in pts.windows(2) {
+        if y <= w[1].1 {
+            (lo, hi) = (w[0], w[1]);
+            break;
+        }
+    }
+    lo.0 + (hi.0 - lo.0) * (y - lo.1) / (hi.1 - lo.1)
+}
+
 fn soles_mean_yaw(o_mi: &[misarta::se3::SE3<f64>], feet: &[usize; 2]) -> f64 {
     let (mut sy, mut cy) = (0.0, 0.0);
     for &k in feet {
