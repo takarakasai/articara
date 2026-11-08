@@ -282,6 +282,14 @@ fn main() {
     // reference of +0.061 (first jump: +0.040 for +0.050), lift-off vx
     // 0.44-0.55 against 0.62, and the heel lands short of the box edge.
     let jump_box_stiff = flag("JUMP_BOX_STIFF", false);
+    // JUMP_BOX_CROUCH_W (unset = off): the contact level's weight through the
+    // crouch and hold of the jump onto the box after a re-arm, in place of
+    // WBCW_CONTACT_REST (JUMP_REPEAT_SOFT_CROUCH). The level holds the CoP
+    // box too. Measured 2026-11-08 (DIAG_CROUCH, 2.0, 0.20 m box): at 0.1
+    // the CoM follows the lean to +0.047 m ahead of the sole centres at
+    // 0.13 m/s, the plan puts the CoP past the toe edge to brake, the feet
+    // tip and the CoM rocks back to +0.018 at the push.
+    let jump_box_crouch_w = std::env::var("JUMP_BOX_CROUCH_W").ok().map(|s| s.trim().parse::<f64>().unwrap());
     let mut box_jump_now = false;
     // (toe to box, scale, onto the box)
     let box_gap_s = move |toe_x: f64| -> (f64, f64, bool) {
@@ -354,6 +362,10 @@ fn main() {
     // against the one the QP solved for, trunk pitch and rate, and per foot
     // CoP x and load -- where the post-landing forward run comes from.
     let diag_land = flag("DIAG_LAND", false);
+    // DIAG_CROUCH=1: the [land] line every 10 ticks through each jump's
+    // crouch and hold too (label [crouch], time from T_LAUNCH), with the
+    // contact weight's state.
+    let diag_crouch = flag("DIAG_CROUCH", false);
     let trunk_land_vz = env_f64("WBCW_TRUNK_LAND_VZ", 0.0);
     // WBCW_TRUNK_LAND_T (s, default: for good): WBCW_TRUNK_LAND only this
     // long after the touchdown, then WBCW_TRUNK again. Measured 2026-11-03
@@ -2041,6 +2053,9 @@ fn main() {
                     // and the release only (default = WBCW_MOMENTUM).
                     "momentum" if in_push => env_f64("WBCW_MOMENTUM_PUSH", mom_w),
                     "momentum" => mom_w,
+                    "contact+cones" if contact_rest && box_jump_now && repeats_done > 0 && jump_box_crouch_w.is_some() && jump_v > 0.0 && t >= t_launch && push_end.is_none() => {
+                        jump_box_crouch_w.unwrap()
+                    }
                     "contact+cones" if contact_rest => wbcw_contact_rest.unwrap_or(wbcw_contact),
                     "contact+cones" => wbcw_contact,
                     "trunk" if in_push => env_f64("WBCW_TRUNK_PUSH", env_f64("WBCW_TRUNK", 0.3)),
@@ -2068,12 +2083,14 @@ fn main() {
         let sol = solver.solve(&levels, &cfg).unwrap_or_else(|e| panic!("wbc solve failed at t={t:.3} (nc={nc}): {e}"));
         tally.observe(&sol.status, t, tick, nc, &names);
         let ex = dyn_ctx.extract(&sol.x);
-        if diag_land && tick % 10 == 0 && let Some(t0) = touchdown_t && t - t0 <= 3.0 {
+        let crouch_t0 = (diag_crouch && jump_v > 0.0 && push_end.is_none() && t >= t_launch && t < t_launch + jump_t_crouch + jump_t_hold + 0.2).then_some(t_launch);
+        if (diag_land || crouch_t0.is_some()) && tick % 10 == 0 && let Some(t0) = crouch_t0.or(touchdown_t.filter(|&t0| diag_land && t - t0 <= 3.0)) {
             let a_sol = &st.j_com * &ex.qddot + st.djv_com;
             let (cr, ac) = diag_com_cmd.unwrap_or((com, na::Vector3::zeros()));
             let feet_x: Vec<f64> = (0..2).map(|k| misarta::se3::translation(&data.oMi[feet[k]]).x + prof.sole_centre_x).collect();
+            let label = if crouch_t0.is_some() { if contact_rest { "crouch soft" } else { "crouch stiff" } } else { "land" };
             println!(
-                "  [land] t+{:.2} nc={nc} com x {:+.3} ref {:+.3} vx {:+.3} | ax cmd {:+.2} sol {:+.2} | pitch {:+.3} rate {:+.3} | sole x {:+.3} {:+.3} cop x {:+.3} {:+.3} fz {:.0} {:.0}",
+                "  [{label}] t+{:.2} nc={nc} com x {:+.3} ref {:+.3} vx {:+.3} | ax cmd {:+.2} sol {:+.2} | pitch {:+.3} rate {:+.3} | sole x {:+.3} {:+.3} cop x {:+.3} {:+.3} fz {:.0} {:.0}",
                 t - t0, com.x, cr.x, com_vel.x, ac.x, a_sol[0], pitch, st.v_ang_w[1],
                 feet_x[0], feet_x[1], measured.cop[0][0], measured.cop[1][0], measured.cop[0][2], measured.cop[1][2]
             );
