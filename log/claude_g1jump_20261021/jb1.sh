@@ -1,0 +1,12 @@
+#!/bin/bash
+# 段への跳び乗り（jb1）: TB6 の 1 回跳び（倍率 1）の前に高さ 5 cm の台（JUMP_BOX、前の面 x 0.20・0.25・0.30）。LAND_GROUND_Z は既定で入る。1.5・2.0、N=8、種 27182、j56。
+D=/home/takara/work/dp/articara/log/claude_g1jump_20261021; B=$D/g1_flight_probe_j56
+X='"JUMP_ABORT":"1","JUMP_PUSH_R":"0.3","QD_CLAMP":"40","DIAG_TD":"1","FLIGHT_FEET_FLAT":"1","DIAG_HX":"1","RELEASE_FIRST_OFF":"1","WBCW_CONTACT_REST":"0.1","WBCW_TRUNK_LAND":"0.03","FALL_TILT":"1.5","LAND_REF_FOLLOW":"2","AIR_ABORT_T":"0.08"'
+H=',"FLIGHT_FEET_CAPTURE_T":"0.06","KP_FLIGHT_FEET":"1000","KD_FLIGHT_FEET":"63","WBCW_TRUNK_PUSH":"0.003","WBCW_MOMENTUM":"10","WBCW_CONTACT":"100","WBCW_TRUNK_LAND_VZ":"0","JUMP_H_NAT":"1","WBCW_CONTACT_REST_LAUNCH":"1","FLIGHT_FEET_CAPTURE":"0.55","FLIGHT_TRUNK":"0","FLIGHT_FEET_W":"10","WBCW_MOMENTUM_PUSH":"1","MU_TORSION":"0.02","TRUNK_RP_YAWED":"1"'
+TB=',"JUMP_VX_TAB":"1.0:1.0,1.5:1.2,2.0:1.6","JUMP_LEAN_TAB":"1.0:0,1.5:0.045,2.0:0.06"'
+cd $D
+run() { TAG=$1 SEED=27182 BIN=$B CONDS=1.5,2.0 N=8 W=4 EXTRA="{$X$H$TB,\"DIAG_FWD_FEET\":\"1\",\"JUMP_BOX\":\"$2\"}" python3 jrand.py; }
+run JB20 0.20,0.05 & run JB25 0.25,0.05 & run JB30 0.30,0.05 &
+wait
+python3 fsumm.py JB20 JB25 JB30
+echo "#### JB1_DONE"

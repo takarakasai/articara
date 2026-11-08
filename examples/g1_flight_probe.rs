@@ -59,6 +59,27 @@ fn main() {
     o.sim_dt = env_f64("SIM_DT", 0.001);
     o.mu_ground = env_f64("MU_GROUND", 0.7);
     o.probe_z = env_f64("PROBE_Z", prof.probe_z);
+    // JUMP_BOX="x,h[,len]": a box welded to the world, its front face at
+    // world x (m), h m high, len m long (default 2) and 2 m wide, to jump
+    // onto. Named stair_* so a foot on it counts as a stance contact.
+    // Unset = no box (bit-identical).
+    let jump_box: Option<(f64, f64, f64)> = std::env::var("JUMP_BOX").ok().map(|s| {
+        let p: Vec<f64> = s.split(',').map(|x| x.trim().parse().unwrap()).collect();
+        (p[0], p[1], p.get(2).copied().unwrap_or(2.0))
+    });
+    if let Some((bx, bh, bl)) = jump_box {
+        o.extra_worldbody = Some(format!(
+            "\n    <body name=\"stair_jump_box\" pos=\"{:.4} 0 {:.4}\">\
+             \n      <geom name=\"stair_jump_box_geom\" type=\"box\" size=\"{:.4} 1.0 {:.4}\" rgba=\"0.55 0.57 0.62 1\"/>\n    </body>",
+            bx + 0.5 * bl, 0.5 * bh, 0.5 * bl, 0.5 * bh
+        ));
+        println!("jump box: front face x {bx:+.3}, height {bh:.3}, length {bl:.3}");
+        // a box under the start (front face behind the feet): spawn on it,
+        // 1 cm up (INIT_JITTER otherwise puts a sole into it)
+        if bx < -0.2 {
+            o.spawn_z_offset = bh + 0.01;
+        }
+    }
     // INIT_JITTER / INIT_SEED: the walker's per-member posture jitter (each
     // leg joint of the build seed +- INIT_JITTER rad, SplitMix64/xorshift on
     // INIT_SEED), so a battery's members are different situations. 0 = off.
@@ -466,6 +487,22 @@ fn main() {
     // unloaded foot wandered 7-8 cm back on the floor and took the
     // reference with it.
     let land_ref_follow = env_f64("LAND_REF_FOLLOW", 0.0) as u32;
+    // LAND_GROUND_Z=1 (default on with JUMP_BOX): at each touchdown the
+    // stand height and the standing foot heights move with the surface the
+    // robot lands on -- the loaded feet's height then minus at the start;
+    // at each re-arm, both feet's. Off = bit-identical.
+    let land_ground_z = flag("LAND_GROUND_Z", jump_box.is_some());
+    // JUMP_BOX_CLEAR=c (m, needs JUMP_BOX; unset = off): in flight, a foot
+    // whose heel (sole centre - SOLE_HALF_L - JUMP_BOX_CLEAR_X) is not yet
+    // past the box's front face is held with its sole at least c above the
+    // box top; past it, the foot hangs from the CoM as on flat ground.
+    // Measured 2026-11-08: hanging feet clip the box edge on the way up
+    // (5 cm box 0.20-0.25 m ahead, 1.5: 1/8 and 6/8 standing); a constant
+    // FLIGHT_FEET_TUCK clears it but lands with the legs 5 cm more bent and
+    // one member then drifts backward off the box.
+    let jump_box_clear = std::env::var("JUMP_BOX_CLEAR").ok().map(|s| s.trim().parse::<f64>().unwrap());
+    let jump_box_clear_x = env_f64("JUMP_BOX_CLEAR_X", 0.03);
+    let mut ground_dz = 0.0_f64;
     let mut land_sole0: Option<(f64, na::Vector2<f64>)> = None;
     // (landing start, each sole's last position, accumulated shift)
     let mut land_follow: Option<(f64, [na::Vector2<f64>; 2], na::Vector2<f64>)> = None;
@@ -779,7 +816,8 @@ fn main() {
         let (q, v, v_dvec, data) = (&st.q, &st.v, &st.v_dvec, &st.data);
         let com = st.com;
         let com_vel = st.com_vel;
-        let stand_z = *stand_z.get_or_insert(com.z);
+        let stand_z0 = *stand_z.get_or_insert(com.z);
+        let mut stand_z = stand_z0 + ground_dz;
         if t >= t_launch {
             if jump_repeat > 0 && fwd_x0.is_none() {
                 let sole = |k: usize| {
@@ -955,6 +993,11 @@ fn main() {
             && t - tl >= jump_repeat_after
         {
             repeats_done += 1;
+            if land_ground_z && let Some(f0) = foot_stand_z {
+                ground_dz = 0.5 * (0..2).map(|k| misarta::se3::translation(&data.oMi[feet[k]]).z - f0[k]).sum::<f64>();
+                stand_z = stand_z0 + ground_dz;
+                println!("  [ground] t={t:.3} re-arm on {ground_dz:+.4} m above the start");
+            }
             let r = diag_com_cmd.map_or(com, |(c, _)| c);
             com_ref = Some(na::Vector3::new(r.x, r.y, stand_z));
             let sole = |k: usize| {
@@ -1035,7 +1078,8 @@ fn main() {
                 }
             }
         }
-        let fz_stand = *foot_stand_z.get_or_insert([misarta::se3::translation(&data.oMi[feet[0]]).z, misarta::se3::translation(&data.oMi[feet[1]]).z]);
+        let fz_stand0 = *foot_stand_z.get_or_insert([misarta::se3::translation(&data.oMi[feet[0]]).z, misarta::se3::translation(&data.oMi[feet[1]]).z]);
+        let mut fz_stand = fz_stand0.map(|z| z + ground_dz);
         for k in 0..2 {
             if in_contact[k] || flight_t0.is_some() {
                 reseat_xy[k] = None;
@@ -1084,6 +1128,17 @@ fn main() {
                 if touchdown_t.is_none() {
                     td_vz = com_vel.z;
                     fwd_td_x = Some(com.x);
+                }
+                // the first touchdown of a jump only: a later 2 ms "flight"
+                // with a heel over the box edge measures the tilted foot
+                if land_ground_z && touchdown_t.is_none() {
+                    let dz: Vec<f64> = (0..2).filter(|&k| in_contact[k]).map(|k| misarta::se3::translation(&data.oMi[feet[k]]).z - fz_stand0[k]).collect();
+                    if !dz.is_empty() {
+                        ground_dz = dz.iter().sum::<f64>() / dz.len() as f64;
+                        stand_z = stand_z0 + ground_dz;
+                        fz_stand = fz_stand0.map(|z| z + ground_dz);
+                    }
+                    println!("  [ground] t={t:.3} landed {ground_dz:+.4} m above the start (feet {dz:.4?})");
                 }
                 touchdown_t.get_or_insert(t);
                 ever_landed = true;
@@ -1805,6 +1860,12 @@ fn main() {
                 let pos = misarta::se3::translation(&data.oMi[feet[k]]);
                 let vel3 = &jf.rows(3, 3).into_owned() * v_dvec;
                 let vel = na::Vector3::new(vel3[0], vel3[1], vel3[2]);
+                let mut p_tgt = com + off[k];
+                if let (Some(c), Some((bx, bh, _))) = (jump_box_clear, jump_box)
+                    && pos.x + prof.sole_centre_x - sole_half_l - jump_box_clear_x < bx
+                {
+                    p_tgt.z = p_tgt.z.max(bh + c + prof.sole_below_origin);
+                }
                 if flight_feet_flat {
                     // FLIGHT_FEET_FLAT=1: also hold the sole level (roll and
                     // pitch to 0, yaw as it is), so both feet meet the floor
@@ -1816,13 +1877,13 @@ fn main() {
                     let w3 = &jf.rows(0, 3).into_owned() * v_dvec;
                     let omega = na::Vector3::new(w3[0], w3[1], w3[2]);
                     levels.push(bt::swing_with_pose(
-                        dyn_ctx.qddot(), &jf, &djv, &pos, &vel, &(com + off[k]), &com_vel,
+                        dyn_ctx.qddot(), &jf, &djv, &pos, &vel, &p_tgt, &com_vel,
                         kp_ff, kp_ff, kd_ff, if flight_feet_yaw { bt::SwingAxes::Pose } else { bt::SwingAxes::XyzRollPitch },
                         Some((rot, rot_tgt, omega, kp_ffr, kd_ffr)),
                     ));
                 } else {
                     levels.push(bt::swing(
-                        dyn_ctx.qddot(), &jf, &djv, &pos, &vel, &(com + off[k]), &com_vel,
+                        dyn_ctx.qddot(), &jf, &djv, &pos, &vel, &p_tgt, &com_vel,
                         kp_ff, kp_ff, kd_ff, bt::SwingAxes::Xyz,
                     ));
                 }
