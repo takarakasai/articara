@@ -290,6 +290,31 @@ fn main() {
     // 0.13 m/s, the plan puts the CoP past the toe edge to brake, the feet
     // tip and the CoM rocks back to +0.018 at the push.
     let jump_box_crouch_w = std::env::var("JUMP_BOX_CROUCH_W").ok().map(|s| s.trim().parse::<f64>().unwrap());
+    // JUMP_BOX_V (m/s, unset = JUMP_V) and JUMP_BOX_CROUCH (m, unset =
+    // CROUCH): the push's take-off speed and the crouch depth of the jump
+    // onto the box only (JUMP_VX and the tables stay those of JUMP_V; the
+    // push line is tilted so vx is kept). Measured 2026-11-09 (jb14, BX on a
+    // 7.5 / 10 cm box): lift-off vz 1.16 m/s at 1.5 (CoM up 6.9 cm) and 1.40
+    // at 2.0 (10.0 cm); the toe hits the box face or corner.
+    let jump_box_v = std::env::var("JUMP_BOX_V").ok().map(|s| s.trim().parse::<f64>().unwrap());
+    let jump_box_crouch = std::env::var("JUMP_BOX_CROUCH").ok().map(|s| s.trim().parse::<f64>().unwrap());
+    let crouch_base = crouch;
+    // JUMP_BOX_V_TABS=1: read JUMP_VX_TAB and JUMP_LEAN_TAB at JUMP_BOX_V
+    // too, for the jump onto the box. Measured 2026-11-09 (jb15, 10 cm box):
+    // with the tables at JUMP_V 1.5 the push line tilts less as JUMP_BOX_V
+    // rises (vx 0.60 / 0.50 / 0.39 m/s at JUMP_V / 2.5 / 3.0) and the heel
+    // lands on the edge.
+    let jump_box_v_tabs = flag("JUMP_BOX_V_TABS", false);
+    let (box_vx, box_lean) = match jump_box_v {
+        Some(v) if jump_box_v_tabs => (
+            tab("JUMP_VX_TAB").map_or(jump_vx, |t| interp(&t, v)),
+            tab("JUMP_LEAN_TAB").map_or(jump_lean, |t| interp(&t, v)),
+        ),
+        _ => (jump_vx, jump_lean),
+    };
+    // the take-off speed, forward speed and lean of the jump now (JUMP_V's
+    // but for the jump onto the box)
+    let (mut jv, mut jvx, mut jlean) = (jump_v, jump_vx, jump_lean);
     let mut box_jump_now = false;
     // (toe to box, scale, onto the box)
     let box_gap_s = move |toe_x: f64| -> (f64, f64, bool) {
@@ -889,7 +914,8 @@ fn main() {
                 if fwd_feet0.is_none() && jump_box_gap.is_some() {
                     let (gap, s, onto) = box_gap_s(front_toe_x(&st.data.oMi));
                     (fwd_s, box_jump_now) = (s, onto);
-                    push_cfg.vx_target = env_f64("JUMP_MPC_VX", jump_vx * fwd_s);
+                    (jv, crouch, jvx, jlean) = if box_jump_now { (jump_box_v.unwrap_or(jump_v), jump_box_crouch.unwrap_or(crouch_base), box_vx, box_lean) } else { (jump_v, crouch_base, jump_vx, jump_lean) };
+                    push_cfg.vx_target = env_f64("JUMP_MPC_VX", jvx * fwd_s);
                     println!("  [box-gap] t={t:.3} toe to box {gap:+.3} m: scale {fwd_s:.4}");
                 }
                 fwd_feet0.get_or_insert(x);
@@ -1055,8 +1081,9 @@ fn main() {
             } else {
                 let (gap, s, onto) = box_gap_s(front_toe_x(&data.oMi));
                 (fwd_s, box_jump_now) = (s, onto);
+                (jv, crouch, jvx, jlean) = if box_jump_now { (jump_box_v.unwrap_or(jump_v), jump_box_crouch.unwrap_or(crouch_base), box_vx, box_lean) } else { (jump_v, crouch_base, jump_vx, jump_lean) };
                 if !jump_mpc_vx_set {
-                    push_cfg.vx_target = jump_vx * fwd_s;
+                    push_cfg.vx_target = jvx * fwd_s;
                 }
                 println!("  [box-gap] t={t:.3} toe to box {gap:+.3} m: scale {fwd_s:.4}");
             }
@@ -1481,10 +1508,10 @@ fn main() {
                         };
                         rearm_shift = 0.5 * (sole(0) + sole(1)) + off - c_ref.xy();
                     }
-                    let lean_x = jump_lean * fwd_s + rearm_shift.x;
+                    let lean_x = jlean * fwd_s + rearm_shift.x;
                     let (mut x, mut vx, mut ax) = quintic(0.0, 0.0, lean_x, jump_t_crouch, s);
                     let (y, vy, ay) = quintic(0.0, 0.0, rearm_shift.y, jump_t_crouch, s);
-                    let kx = jump_vx * fwd_s / jump_v;
+                    let kx = jvx * fwd_s / jv;
                     let s_push = s - jump_t_crouch - jump_t_hold;
                     if jump_repeat > 0 && s_push > 0.0 && s_push <= dt + 1e-9 {
                         let sole = |k: usize| {
@@ -1504,8 +1531,8 @@ fn main() {
                         // z(T) = a0 T^2 (2 + r) / 6.
                         let r = jump_push_r;
                         let (t_push, a) = if r < 1.0 {
-                            let t_push = 3.0 * dz * (1.0 + r) / ((2.0 + r) * jump_v);
-                            let a0 = 2.0 * jump_v / ((1.0 + r) * t_push);
+                            let t_push = 3.0 * dz * (1.0 + r) / ((2.0 + r) * jv);
+                            let a0 = 2.0 * jv / ((1.0 + r) * t_push);
                             let sp = s_push.min(t_push);
                             let k = (1.0 - r) / t_push;
                             z = z_low + a0 * (0.5 * sp * sp - k * sp.powi(3) / 6.0);
@@ -1513,11 +1540,11 @@ fn main() {
                             az = a0 * (1.0 - k * sp);
                             (t_push, a0)
                         } else {
-                            let a = jump_v * jump_v / (2.0 * dz);
+                            let a = jv * jv / (2.0 * dz);
                             z = z_low + 0.5 * a * s_push * s_push;
                             vz = a * s_push;
                             az = a;
-                            (jump_v / a, a)
+                            (jv / a, a)
                         };
                         push_phase = s_push < t_push;
                         x += kx * (z - z_low);
@@ -1560,11 +1587,11 @@ fn main() {
                         let dz = stand_z + jump_z_to - z_low;
                         let r = jump_push_r;
                         let (t_push, a0, kk) = if r < 1.0 {
-                            let tp = 3.0 * dz * (1.0 + r) / ((2.0 + r) * jump_v);
-                            (tp, 2.0 * jump_v / ((1.0 + r) * tp), (1.0 - r) / tp)
+                            let tp = 3.0 * dz * (1.0 + r) / ((2.0 + r) * jv);
+                            (tp, 2.0 * jv / ((1.0 + r) * tp), (1.0 - r) / tp)
                         } else {
-                            let a = jump_v * jump_v / (2.0 * dz);
-                            (jump_v / a, a, 0.0)
+                            let a = jv * jv / (2.0 * dz);
+                            (jv / a, a, 0.0)
                         };
                         let s_end = jump_t_crouch + jump_t_hold + t_push;
                         // the scripted vertical plan: (z, az) at s
@@ -1774,7 +1801,7 @@ fn main() {
                     let scale = if s_j < t_ch { 1.0 } else {
                         let dz = stand_z + jump_z_to - (stand_z - crouch);
                         let r = jump_push_r;
-                        let t_push = if r < 1.0 { 3.0 * dz * (1.0 + r) / ((2.0 + r) * jump_v) } else { 2.0 * dz / jump_v };
+                        let t_push = if r < 1.0 { 3.0 * dz * (1.0 + r) / ((2.0 + r) * jv) } else { 2.0 * dz / jv };
                         (1.0 - (s_j - t_ch) / t_push).clamp(0.0, 1.0)
                     };
                     let h = scale * hn;
@@ -1807,7 +1834,7 @@ fn main() {
                 }
                 let dz = crouch + jump_z_to;
                 let r = jump_push_r;
-                let t_push = if r < 1.0 { 3.0 * dz * (1.0 + r) / ((2.0 + r) * jump_v) } else { 2.0 * dz / jump_v };
+                let t_push = if r < 1.0 { 3.0 * dz * (1.0 + r) / ((2.0 + r) * jv) } else { 2.0 * dz / jv };
                 let tr = t_push + jump_turn_t0;
                 let p = (s_j - t_ch + jump_turn_t0) / tr;
                 h_ref_m[2] = turn_hz_now * p.clamp(0.0, 1.0);
