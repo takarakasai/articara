@@ -561,6 +561,16 @@ fn main() {
     // unloaded foot wandered 7-8 cm back on the floor and took the
     // reference with it.
     let land_ref_follow = env_f64("LAND_REF_FOLLOW", 0.0) as u32;
+    // LAND_REF_SOLES=T (s, unset = off; needs JUMP_REPEAT for the stand
+    // offset): from LAND_T after a touchdown, carry the landing reference's
+    // horizontal part over T s (quintic weight) to the soles' current
+    // midpoint plus the CoM's offset from it at the first jump. Measured
+    // 2026-11-09 (jb16-17, JUMP_BOX_V on a 5-10 cm box): the reference is
+    // c0 + v0 LAND_T / 2 and never looks at the feet, which land ahead of
+    // the CoM on a box; the falls that land well past the edge drift back
+    // (CoM - ankle origin +0.00 at 0.8 s, -0.05 to -0.09 at 1.5 s; standing
+    // runs +0.03 to +0.08 and +-0.016) and fall backward.
+    let land_ref_soles = std::env::var("LAND_REF_SOLES").ok().map(|s| s.trim().parse::<f64>().unwrap().max(0.02));
     // LAND_GROUND_Z=1 (default on with JUMP_BOX): at each touchdown the
     // stand height and the standing foot heights move with the surface the
     // robot lands on -- the loaded feet's height then minus at the start;
@@ -1491,6 +1501,16 @@ fn main() {
                         let m0 = land_sole0.map_or(mid, |(_, m)| m);
                         c.x += mid.x - m0.x;
                         c.y += mid.y - m0.y;
+                    }
+                    if let (Some(tb), Some(off)) = (land_ref_soles, stand_off) && s > land_t {
+                        let goal = 0.5 * (sole(0) + sole(1)) + off;
+                        let (w, dw, ddw) = quintic(0.0, 0.0, 1.0, tb, s - land_t);
+                        for i in 0..2 {
+                            let e = goal[i] - c[i];
+                            c[i] += w * e;
+                            cd[i] = (1.0 - w) * cd[i] + dw * e;
+                            cdd[i] = (1.0 - w) * cdd[i] + ddw * e;
+                        }
                     }
                     (c, cd, cdd)
                 }
