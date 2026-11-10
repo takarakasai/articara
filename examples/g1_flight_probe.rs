@@ -400,6 +400,16 @@ fn main() {
     let trunk_land_t = env_f64("WBCW_TRUNK_LAND_T", f64::INFINITY);
     let kp_trunk_land = env_f64("KP_TRUNK_LAND", kp_trunk);
     let kd_trunk_land = env_f64("KD_TRUNK_LAND", kd_trunk);
+    // KP/KD_TRUNK_LAND_BOX: the trunk gains after the landing of a jump onto
+    // the box (JUMP_BOX; default = KP/KD_TRUNK_LAND). Measured 2026-11-10
+    // (jb20, 5 cm box, JUMP_V 2.0): the box landing comes in pitched
+    // 0.6-0.8 rad, the rise rights the trunk at -1.2 rad/s, throws the CoM
+    // 5 cm behind the sole centre and the feet roll back on the heel edge
+    // (11 of 12 falls); KP/KD_TRUNK_LAND 60/15 stood all 12 and 2.0 went
+    // 51 -> 63/64, but on every landing it also changed the flat jumps
+    // before the box (the box take-off at 1.5 fell 3 members short).
+    let kp_trunk_land_box = env_f64("KP_TRUNK_LAND_BOX", kp_trunk_land);
+    let kd_trunk_land_box = env_f64("KD_TRUNK_LAND_BOX", kd_trunk_land);
     let mut diag_com_cmd: Option<(na::Vector3<f64>, na::Vector3<f64>)> = None; // (ref, a_cmd)
     // DIAG_PUSHX=1: from the push start to 30 ms after the push ends, every
     // 10 ms: the CoM x reference (position, velocity, acceleration) against
@@ -1727,7 +1737,13 @@ fn main() {
             // 2026-10-28: the weight 0.03 frees the CoM but lets the trunk
             // pitch on from 0.12 to 0.52 rad in 0.5 s (13 of 15 2.0 falls).
             let hard_land = touchdown_t.is_some() && (trunk_land_vz <= 0.0 || td_vz < -trunk_land_vz);
-            let (kp_t, kd_t) = if hard_land { (kp_trunk_land, kd_trunk_land) } else { (kp_trunk, kd_trunk) };
+            let (kp_t, kd_t) = if hard_land && box_jump_now {
+                (kp_trunk_land_box, kd_trunk_land_box)
+            } else if hard_land {
+                (kp_trunk_land, kd_trunk_land)
+            } else {
+                (kp_trunk, kd_trunk)
+            };
             let rp_ref = if trunk_rp_yawed {
                 let (sy, cy) = yaw_now.sin_cos();
                 let (er, ep) = (-kp_t * roll, -kp_t * pitch);
