@@ -1,0 +1,217 @@
+KD60s10_40 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+KD60s10_40 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+KD60s10_30 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+KD60s10_30 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+KD60s10_60 JUMP_V=1.5: 着地 15/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+KD60s10_60 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+KD60s75_40 JUMP_V=1.5: 着地 14/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+KD60s75_40 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+KD60s5_40 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+KD60s5_40 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+KD60s5_30 JUMP_V=1.5: 着地 14/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+KD60s5_30 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+KD60s5_60 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+KD60s5_60 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+KD60s75_20 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+KD60s75_20 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+KD60s10_20 JUMP_V=1.5: 着地 15/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+KD60s10_20 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+KD60s5_20 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+KD60s5_20 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+KD60s75_30 JUMP_V=1.5: 着地 15/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 6/16
+KD60s75_30 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+KD60s75_60 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+KD60s75_60 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+KD60h10_30 JUMP_V=1.5: 着地 7/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+KD60h10_30 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+KD60h75_30 JUMP_V=1.5: 着地 7/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+KD60h75_30 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+KD60h5_30 JUMP_V=1.5: 着地 7/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+KD60h5_30 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+KD60h75_40 JUMP_V=1.5: 着地 7/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+KD60h75_40 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+KD60h10_40 JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+KD60h10_40 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+KD60h5_40 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+KD60h5_40 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+KD60h75_20 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+KD60h75_20 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+KD60h5_60 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+KD60h5_60 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+KD60h10_20 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+KD60h10_20 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+KD60h5_20 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+KD60h5_20 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+KD60h75_60 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+KD60h75_60 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+KD60h10_60 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+KD60h10_60 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+KD100s10_40 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+KD100s10_40 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+KD100s10_60 JUMP_V=1.5: 着地 15/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+KD100s10_60 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+KD100s10_30 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+KD100s10_30 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+KD100s75_40 JUMP_V=1.5: 着地 14/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+KD100s75_40 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+KD100s5_30 JUMP_V=1.5: 着地 14/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+KD100s5_30 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+KD100s5_40 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+KD100s5_40 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+KD100s75_30 JUMP_V=1.5: 着地 15/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 6/16
+KD100s75_30 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+KD100s10_20 JUMP_V=1.5: 着地 15/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+KD100s10_20 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+KD100s5_20 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+KD100s5_20 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+KD100s5_60 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+KD100s5_60 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+KD100s75_60 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+KD100s75_60 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+KD100s75_20 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+KD100s75_20 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+KD100h10_30 JUMP_V=1.5: 着地 7/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+KD100h10_30 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+KD100h5_30 JUMP_V=1.5: 着地 7/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+KD100h5_30 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+KD100h75_30 JUMP_V=1.5: 着地 7/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+KD100h75_30 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+KD100h75_40 JUMP_V=1.5: 着地 7/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+KD100h75_40 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+KD100h10_40 JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+KD100h10_40 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+KD100h5_40 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+KD100h5_40 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+KD100h10_20 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+KD100h10_20 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+KD100h75_20 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+KD100h75_20 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+KD100h10_60 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+KD100h10_60 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+KD100h5_20 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+KD100h5_20 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+KD100h75_60 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+KD100h75_60 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+KD100h5_60 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+KD100h5_60 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+KD60s5_20 v1.5: standing 16/16 on box 16 | jumps {2: 14, 3: 2} | gap at box jump med +0.102 [+0.093,+0.106] | falls 
+KD60s5_20 v2.0: standing 16/16 on box 16 | jumps {2: 16} | gap at box jump med +0.105 [+0.083,+0.111] | falls 
+KD60s5_30 v1.5: standing 14/16 on box 14 | jumps {2: 4, 3: 9, 4: 1} | gap at box jump med +0.105 [+0.084,+0.125] | falls m03:1hop m10:1hop
+KD60s5_30 v2.0: standing 16/16 on box 16 | jumps {2: 14, 3: 2} | gap at box jump med +0.104 [+0.076,+0.119] | falls 
+KD60s5_40 v1.5: standing 13/16 on box 13 | jumps {2: 4, 3: 9} | gap at box jump med +0.106 [+0.078,+0.124] | falls m06:3box m11:2hop m13:1hop
+KD60s5_40 v2.0: standing 16/16 on box 16 | jumps {2: 9, 3: 7} | gap at box jump med +0.097 [+0.075,+0.124] | falls 
+KD60s5_60 v1.5: standing 16/16 on box 16 | jumps {2: 12, 3: 3, 4: 1} | gap at box jump med +0.108 [+0.093,+0.124] | falls 
+KD60s5_60 v2.0: standing 15/16 on box 15 | jumps {2: 9, 3: 5, 4: 1} | gap at box jump med +0.103 [+0.076,+0.123] | falls m07:2hop
+KD60s75_20 v1.5: standing 16/16 on box 16 | jumps {2: 14, 3: 2} | gap at box jump med +0.102 [+0.093,+0.106] | falls 
+KD60s75_20 v2.0: standing 16/16 on box 16 | jumps {2: 16} | gap at box jump med +0.105 [+0.083,+0.111] | falls 
+KD60s75_30 v1.5: standing 15/16 on box 15 | jumps {1: 1, 2: 4, 3: 9, 4: 1} | gap at box jump med +0.105 [+0.084,+0.125] | falls m03:1hop
+KD60s75_30 v2.0: standing 16/16 on box 16 | jumps {2: 14, 3: 2} | gap at box jump med +0.104 [+0.076,+0.119] | falls 
+KD60s75_40 v1.5: standing 14/16 on box 14 | jumps {2: 4, 3: 9, 4: 1} | gap at box jump med +0.110 [+0.078,+0.124] | falls m06:3box m13:1hop
+KD60s75_40 v2.0: standing 15/16 on box 15 | jumps {2: 9, 3: 6} | gap at box jump med +0.097 [+0.075,+0.124] | falls m10:3box
+KD60s75_60 v1.5: standing 16/16 on box 16 | jumps {2: 12, 3: 3, 4: 1} | gap at box jump med +0.108 [+0.093,+0.124] | falls 
+KD60s75_60 v2.0: standing 15/16 on box 15 | jumps {2: 9, 3: 5, 4: 1} | gap at box jump med +0.103 [+0.076,+0.123] | falls m07:2hop
+KD60s10_20 v1.5: standing 15/16 on box 15 | jumps {2: 13, 3: 2} | gap at box jump med +0.102 [+0.093,+0.106] | falls m10:2box
+KD60s10_20 v2.0: standing 16/16 on box 16 | jumps {2: 16} | gap at box jump med +0.105 [+0.083,+0.111] | falls 
+KD60s10_30 v1.5: standing 13/16 on box 13 | jumps {2: 4, 3: 8, 4: 1} | gap at box jump med +0.105 [+0.084,+0.125] | falls m01:3box m03:1hop m10:1hop
+KD60s10_30 v2.0: standing 16/16 on box 16 | jumps {2: 14, 3: 2} | gap at box jump med +0.104 [+0.076,+0.119] | falls 
+KD60s10_40 v1.5: standing 13/16 on box 13 | jumps {2: 4, 3: 9} | gap at box jump med +0.106 [+0.078,+0.124] | falls m06:3box m11:2hop m13:1hop
+KD60s10_40 v2.0: standing 15/16 on box 15 | jumps {2: 9, 3: 6} | gap at box jump med +0.097 [+0.075,+0.124] | falls m10:3box
+KD60s10_60 v1.5: standing 15/16 on box 15 | jumps {2: 11, 3: 3, 4: 1} | gap at box jump med +0.108 [+0.093,+0.124] | falls m02:2box
+KD60s10_60 v2.0: standing 15/16 on box 15 | jumps {2: 9, 3: 5, 4: 1} | gap at box jump med +0.103 [+0.076,+0.123] | falls m07:2hop
+KD60h5_20 v1.5: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.099 [+0.095,+0.106] | falls 
+KD60h5_20 v2.0: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.102 [+0.086,+0.109] | falls 
+KD60h5_30 v1.5: standing 7/8 on box 7 | jumps {2: 3, 3: 4} | gap at box jump med +0.101 [+0.087,+0.124] | falls m03:1hop
+KD60h5_30 v2.0: standing 7/8 on box 7 | jumps {2: 7} | gap at box jump med +0.089 [+0.078,+0.123] | falls m05:2box
+KD60h5_40 v1.5: standing 8/8 on box 8 | jumps {3: 6, 4: 2} | gap at box jump med +0.104 [+0.083,+0.120] | falls 
+KD60h5_40 v2.0: standing 7/8 on box 7 | jumps {2: 4, 3: 3} | gap at box jump med +0.104 [+0.086,+0.118] | falls m07:1hop
+KD60h5_60 v1.5: standing 8/8 on box 8 | jumps {2: 5, 3: 2, 4: 1} | gap at box jump med +0.105 [+0.076,+0.122] | falls 
+KD60h5_60 v2.0: standing 8/8 on box 8 | jumps {2: 4, 3: 4} | gap at box jump med +0.104 [+0.089,+0.121] | falls 
+KD60h75_20 v1.5: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.099 [+0.095,+0.106] | falls 
+KD60h75_20 v2.0: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.102 [+0.086,+0.109] | falls 
+KD60h75_30 v1.5: standing 7/8 on box 7 | jumps {2: 3, 3: 4} | gap at box jump med +0.101 [+0.087,+0.124] | falls m03:1hop
+KD60h75_30 v2.0: standing 7/8 on box 7 | jumps {2: 7} | gap at box jump med +0.089 [+0.078,+0.123] | falls m05:2box
+KD60h75_40 v1.5: standing 7/8 on box 7 | jumps {3: 5, 4: 2} | gap at box jump med +0.104 [+0.083,+0.120] | falls m07:3box
+KD60h75_40 v2.0: standing 7/8 on box 7 | jumps {2: 4, 3: 3} | gap at box jump med +0.104 [+0.086,+0.118] | falls m07:1hop
+KD60h75_60 v1.5: standing 8/8 on box 8 | jumps {2: 5, 3: 2, 4: 1} | gap at box jump med +0.105 [+0.076,+0.122] | falls 
+KD60h75_60 v2.0: standing 8/8 on box 8 | jumps {2: 4, 3: 4} | gap at box jump med +0.104 [+0.089,+0.121] | falls 
+KD60h10_20 v1.5: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.099 [+0.095,+0.106] | falls 
+KD60h10_20 v2.0: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.102 [+0.086,+0.109] | falls 
+KD60h10_30 v1.5: standing 7/8 on box 7 | jumps {2: 3, 3: 4} | gap at box jump med +0.101 [+0.087,+0.124] | falls m03:1hop
+KD60h10_30 v2.0: standing 7/8 on box 7 | jumps {2: 7} | gap at box jump med +0.089 [+0.078,+0.123] | falls m05:2box
+KD60h10_40 v1.5: standing 6/8 on box 6 | jumps {3: 4, 4: 2} | gap at box jump med +0.104 [+0.083,+0.120] | falls m02:3box m07:3box
+KD60h10_40 v2.0: standing 8/8 on box 8 | jumps {1: 1, 2: 4, 3: 3} | gap at box jump med +0.104 [+0.086,+0.118] | falls 
+KD60h10_60 v1.5: standing 8/8 on box 8 | jumps {2: 5, 3: 2, 4: 1} | gap at box jump med +0.105 [+0.076,+0.122] | falls 
+KD60h10_60 v2.0: standing 8/8 on box 8 | jumps {2: 4, 3: 4} | gap at box jump med +0.104 [+0.089,+0.121] | falls 
+KD100s5_20 v1.5: standing 16/16 on box 16 | jumps {2: 14, 3: 2} | gap at box jump med +0.102 [+0.093,+0.106] | falls 
+KD100s5_20 v2.0: standing 16/16 on box 16 | jumps {2: 16} | gap at box jump med +0.105 [+0.083,+0.111] | falls 
+KD100s5_30 v1.5: standing 14/16 on box 14 | jumps {2: 4, 3: 9, 4: 1} | gap at box jump med +0.105 [+0.084,+0.125] | falls m03:1hop m10:1hop
+KD100s5_30 v2.0: standing 16/16 on box 16 | jumps {2: 14, 3: 2} | gap at box jump med +0.104 [+0.076,+0.119] | falls 
+KD100s5_40 v1.5: standing 13/16 on box 13 | jumps {2: 4, 3: 9} | gap at box jump med +0.106 [+0.078,+0.124] | falls m06:3box m11:2hop m13:1hop
+KD100s5_40 v2.0: standing 16/16 on box 16 | jumps {2: 9, 3: 7} | gap at box jump med +0.097 [+0.075,+0.124] | falls 
+KD100s5_60 v1.5: standing 16/16 on box 16 | jumps {2: 12, 3: 3, 4: 1} | gap at box jump med +0.108 [+0.093,+0.124] | falls 
+KD100s5_60 v2.0: standing 15/16 on box 15 | jumps {2: 9, 3: 5, 4: 1} | gap at box jump med +0.103 [+0.076,+0.123] | falls m07:2hop
+KD100s75_20 v1.5: standing 16/16 on box 16 | jumps {2: 14, 3: 2} | gap at box jump med +0.102 [+0.093,+0.106] | falls 
+KD100s75_20 v2.0: standing 16/16 on box 16 | jumps {2: 16} | gap at box jump med +0.105 [+0.083,+0.111] | falls 
+KD100s75_30 v1.5: standing 15/16 on box 15 | jumps {1: 1, 2: 4, 3: 9, 4: 1} | gap at box jump med +0.105 [+0.084,+0.125] | falls m03:1hop
+KD100s75_30 v2.0: standing 16/16 on box 16 | jumps {2: 14, 3: 2} | gap at box jump med +0.104 [+0.076,+0.119] | falls 
+KD100s75_40 v1.5: standing 14/16 on box 14 | jumps {2: 4, 3: 9, 4: 1} | gap at box jump med +0.110 [+0.078,+0.124] | falls m06:3box m13:1hop
+KD100s75_40 v2.0: standing 15/16 on box 15 | jumps {2: 9, 3: 6} | gap at box jump med +0.097 [+0.075,+0.124] | falls m10:3box
+KD100s75_60 v1.5: standing 16/16 on box 16 | jumps {2: 12, 3: 3, 4: 1} | gap at box jump med +0.108 [+0.093,+0.124] | falls 
+KD100s75_60 v2.0: standing 15/16 on box 15 | jumps {2: 9, 3: 5, 4: 1} | gap at box jump med +0.103 [+0.076,+0.123] | falls m07:2hop
+KD100s10_20 v1.5: standing 15/16 on box 15 | jumps {2: 13, 3: 2} | gap at box jump med +0.102 [+0.093,+0.106] | falls m10:2box
+KD100s10_20 v2.0: standing 16/16 on box 16 | jumps {2: 16} | gap at box jump med +0.105 [+0.083,+0.111] | falls 
+KD100s10_30 v1.5: standing 13/16 on box 13 | jumps {2: 4, 3: 8, 4: 1} | gap at box jump med +0.105 [+0.084,+0.125] | falls m01:3box m03:1hop m10:1hop
+KD100s10_30 v2.0: standing 16/16 on box 16 | jumps {2: 14, 3: 2} | gap at box jump med +0.104 [+0.076,+0.119] | falls 
+KD100s10_40 v1.5: standing 13/16 on box 13 | jumps {2: 4, 3: 9} | gap at box jump med +0.106 [+0.078,+0.124] | falls m06:3box m11:2hop m13:1hop
+KD100s10_40 v2.0: standing 15/16 on box 15 | jumps {2: 9, 3: 6} | gap at box jump med +0.097 [+0.075,+0.124] | falls m10:3box
+KD100s10_60 v1.5: standing 15/16 on box 15 | jumps {2: 11, 3: 3, 4: 1} | gap at box jump med +0.108 [+0.093,+0.124] | falls m02:2box
+KD100s10_60 v2.0: standing 15/16 on box 15 | jumps {2: 9, 3: 5, 4: 1} | gap at box jump med +0.103 [+0.076,+0.123] | falls m07:2hop
+KD100h5_20 v1.5: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.099 [+0.095,+0.106] | falls 
+KD100h5_20 v2.0: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.102 [+0.086,+0.109] | falls 
+KD100h5_30 v1.5: standing 7/8 on box 7 | jumps {2: 3, 3: 4} | gap at box jump med +0.101 [+0.087,+0.124] | falls m03:1hop
+KD100h5_30 v2.0: standing 7/8 on box 7 | jumps {2: 7} | gap at box jump med +0.089 [+0.078,+0.123] | falls m05:2box
+KD100h5_40 v1.5: standing 8/8 on box 8 | jumps {3: 6, 4: 2} | gap at box jump med +0.104 [+0.083,+0.120] | falls 
+KD100h5_40 v2.0: standing 7/8 on box 7 | jumps {2: 4, 3: 3} | gap at box jump med +0.104 [+0.086,+0.118] | falls m07:1hop
+KD100h5_60 v1.5: standing 8/8 on box 8 | jumps {2: 5, 3: 2, 4: 1} | gap at box jump med +0.105 [+0.076,+0.122] | falls 
+KD100h5_60 v2.0: standing 8/8 on box 8 | jumps {2: 4, 3: 4} | gap at box jump med +0.104 [+0.089,+0.121] | falls 
+KD100h75_20 v1.5: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.099 [+0.095,+0.106] | falls 
+KD100h75_20 v2.0: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.102 [+0.086,+0.109] | falls 
+KD100h75_30 v1.5: standing 7/8 on box 7 | jumps {2: 3, 3: 4} | gap at box jump med +0.101 [+0.087,+0.124] | falls m03:1hop
+KD100h75_30 v2.0: standing 7/8 on box 7 | jumps {2: 7} | gap at box jump med +0.089 [+0.078,+0.123] | falls m05:2box
+KD100h75_40 v1.5: standing 7/8 on box 7 | jumps {3: 5, 4: 2} | gap at box jump med +0.104 [+0.083,+0.120] | falls m07:3box
+KD100h75_40 v2.0: standing 7/8 on box 7 | jumps {2: 4, 3: 3} | gap at box jump med +0.104 [+0.086,+0.118] | falls m07:1hop
+KD100h75_60 v1.5: standing 8/8 on box 8 | jumps {2: 5, 3: 2, 4: 1} | gap at box jump med +0.105 [+0.076,+0.122] | falls 
+KD100h75_60 v2.0: standing 8/8 on box 8 | jumps {2: 4, 3: 4} | gap at box jump med +0.104 [+0.089,+0.121] | falls 
+KD100h10_20 v1.5: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.099 [+0.095,+0.106] | falls 
+KD100h10_20 v2.0: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.102 [+0.086,+0.109] | falls 
+KD100h10_30 v1.5: standing 7/8 on box 7 | jumps {2: 3, 3: 4} | gap at box jump med +0.101 [+0.087,+0.124] | falls m03:1hop
+KD100h10_30 v2.0: standing 7/8 on box 7 | jumps {2: 7} | gap at box jump med +0.089 [+0.078,+0.123] | falls m05:2box
+KD100h10_40 v1.5: standing 6/8 on box 6 | jumps {3: 4, 4: 2} | gap at box jump med +0.104 [+0.083,+0.120] | falls m02:3box m07:3box
+KD100h10_40 v2.0: standing 8/8 on box 8 | jumps {1: 1, 2: 4, 3: 3} | gap at box jump med +0.104 [+0.086,+0.118] | falls 
+KD100h10_60 v1.5: standing 8/8 on box 8 | jumps {2: 5, 3: 2, 4: 1} | gap at box jump med +0.105 [+0.076,+0.122] | falls 
+KD100h10_60 v2.0: standing 8/8 on box 8 | jumps {2: 4, 3: 4} | gap at box jump med +0.104 [+0.089,+0.121] | falls 
+JS05s5 -> KD60s5 v1.5: 55/64 -> 59/64  改善 4 悪化 0 z +2.00  悪化 
+JS05s5 -> KD60s5 v2.0: 51/64 -> 63/64  改善 12 悪化 0 z +3.46  悪化 
+JS05h5 -> KD60h5 v1.5: 30/32 -> 31/32  改善 1 悪化 0 z +1.00  悪化 
+JS05h5 -> KD60h5 v2.0: 29/32 -> 30/32  改善 1 悪化 0 z +1.00  悪化 
+JS05s75 -> KD60s75 v1.5: 60/64 -> 61/64  改善 1 悪化 0 z +1.00  悪化 
+JS05s75 -> KD60s75 v2.0: 58/64 -> 62/64  改善 4 悪化 0 z +2.00  悪化 
+JS05h75 -> KD60h75 v1.5: 30/32 -> 30/32  改善 0 悪化 0 z +0.00  悪化 
+JS05h75 -> KD60h75 v2.0: 30/32 -> 30/32  改善 0 悪化 0 z +0.00  悪化 
+JS05s10 -> KD60s10 v1.5: 56/64 -> 56/64  改善 0 悪化 0 z +0.00  悪化 
+JS05s10 -> KD60s10 v2.0: 62/64 -> 62/64  改善 0 悪化 0 z +0.00  悪化 
+JS05h10 -> KD60h10 v1.5: 29/32 -> 29/32  改善 0 悪化 0 z +0.00  悪化 
+JS05h10 -> KD60h10 v2.0: 31/32 -> 31/32  改善 0 悪化 0 z +0.00  悪化 
+JS05s5 -> KD100s5 v1.5: 55/64 -> 59/64  改善 4 悪化 0 z +2.00  悪化 
+JS05s5 -> KD100s5 v2.0: 51/64 -> 63/64  改善 12 悪化 0 z +3.46  悪化 
+JS05h5 -> KD100h5 v1.5: 30/32 -> 31/32  改善 1 悪化 0 z +1.00  悪化 
+JS05h5 -> KD100h5 v2.0: 29/32 -> 30/32  改善 1 悪化 0 z +1.00  悪化 
+JS05s75 -> KD100s75 v1.5: 60/64 -> 61/64  改善 1 悪化 0 z +1.00  悪化 
+JS05s75 -> KD100s75 v2.0: 58/64 -> 62/64  改善 4 悪化 0 z +2.00  悪化 
+JS05h75 -> KD100h75 v1.5: 30/32 -> 30/32  改善 0 悪化 0 z +0.00  悪化 
+JS05h75 -> KD100h75 v2.0: 30/32 -> 30/32  改善 0 悪化 0 z +0.00  悪化 
+JS05s10 -> KD100s10 v1.5: 56/64 -> 56/64  改善 0 悪化 0 z +0.00  悪化 
+JS05s10 -> KD100s10 v2.0: 62/64 -> 62/64  改善 0 悪化 0 z +0.00  悪化 
+JS05h10 -> KD100h10 v1.5: 29/32 -> 29/32  改善 0 悪化 0 z +0.00  悪化 
+JS05h10 -> KD100h10 v2.0: 31/32 -> 31/32  改善 0 悪化 0 z +0.00  悪化 
+#### JB70_DONE
