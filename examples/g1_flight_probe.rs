@@ -422,6 +422,12 @@ fn main() {
     // before the box (the box take-off at 1.5 fell 3 members short).
     let kp_trunk_land_box = env_f64("KP_TRUNK_LAND_BOX", kp_trunk_land);
     let kd_trunk_land_box = env_f64("KD_TRUNK_LAND_BOX", kd_trunk_land);
+    // KD_TRUNK_LAND_BOX_TAB ("h:kd,h:kd,...", unset = off): KD_TRUNK_LAND_BOX
+    // read off the box height (JUMP_BOX's second value), piecewise-linear and
+    // clamped at the ends like JUMP_VX_TAB. Measured 2026-11-11 (jb76scr, TT
+    // on a 20 cm box): of the 57 that landed past the edge and fell back in
+    // the rise at KD 150, KD 200 stood 34 and 250 stood 40.
+    let kd_trunk_land_box = tab("KD_TRUNK_LAND_BOX_TAB").map_or(kd_trunk_land_box, |t| interp(&t, jump_box.map_or(0.0, |b| b.1)));
     let mut diag_com_cmd: Option<(na::Vector3<f64>, na::Vector3<f64>)> = None; // (ref, a_cmd)
     // DIAG_PUSHX=1: from the push start to 30 ms after the push ends, every
     // 10 ms: the CoM x reference (position, velocity, acceleration) against
