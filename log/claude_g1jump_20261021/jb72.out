@@ -1,0 +1,221 @@
+V35T10s15_60 JUMP_V=1.5: 着地 7/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+V35T10s15_60 JUMP_V=2.0: 着地 5/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+V35T10s15_40 JUMP_V=1.5: 着地 6/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+V35T10s15_40 JUMP_V=2.0: 着地 7/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+V35T10s15_20 JUMP_V=1.5: 着地 9/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+V35T10s15_20 JUMP_V=2.0: 着地 9/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+V35T10s15_30 JUMP_V=1.5: 着地 6/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+V35T10s15_30 JUMP_V=2.0: 着地 11/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+V30T125s125_40 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+V30T125s125_40 JUMP_V=2.0: 着地 13/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+V30T125s125_30 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+V30T125s125_30 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+V32T125s125_30 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+V32T125s125_30 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+V33T125s125_30 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+V33T125s125_30 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+V32T125s125_40 JUMP_V=1.5: 着地 12/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+V32T125s125_40 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+V32T125s125_60 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+V32T125s125_60 JUMP_V=2.0: 着地 12/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+V30T125s125_60 JUMP_V=1.5: 着地 14/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+V30T125s125_60 JUMP_V=2.0: 着地 14/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+V33T125s125_40 JUMP_V=1.5: 着地 14/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+V33T125s125_40 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+V30T125s125_20 JUMP_V=1.5: 着地 15/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+V30T125s125_20 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+V33T125s125_20 JUMP_V=1.5: 着地 15/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+V33T125s125_20 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+V33T125s125_60 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+V33T125s125_60 JUMP_V=2.0: 着地 14/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+V32T125s125_20 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+V32T125s125_20 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+V375T15s15_20 JUMP_V=1.5: 着地 2/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+V375T15s15_20 JUMP_V=2.0: 着地 3/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+V375T15s15_30 JUMP_V=1.5: 着地 1/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+V375T15s15_30 JUMP_V=2.0: 着地 2/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+V32T125h125_30 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+V32T125h125_30 JUMP_V=2.0: 着地 6/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+V30T125h125_60 JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+V30T125h125_60 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+V30T125h125_40 JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+V30T125h125_40 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+V32T125h125_20 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+V32T125h125_20 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+V30T125h125_30 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+V30T125h125_30 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+V375T15s15_40 JUMP_V=1.5: 着地 1/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+V375T15s15_40 JUMP_V=2.0: 着地 2/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+V375T15s15_60 JUMP_V=1.5: 着地 2/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+V375T15s15_60 JUMP_V=2.0: 着地 3/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+V30T125h125_20 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+V30T125h125_20 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+V32T125h125_60 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+V32T125h125_60 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+V32T125h125_40 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+V32T125h125_40 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+V30T15s15_40 JUMP_V=1.5: 着地 10/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+V30T15s15_40 JUMP_V=2.0: 着地 10/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+V30T15s15_30 JUMP_V=1.5: 着地 11/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+V30T15s15_30 JUMP_V=2.0: 着地 13/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+V30T15s15_60 JUMP_V=1.5: 着地 14/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+V30T15s15_60 JUMP_V=2.0: 着地 10/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+V30T15s15_20 JUMP_V=1.5: 着地 12/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+V30T15s15_20 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+V375T15h15_20 JUMP_V=1.5: 着地 1/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+V375T15h15_20 JUMP_V=2.0: 着地 0/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+V375T15h15_60 JUMP_V=1.5: 着地 1/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+V375T15h15_60 JUMP_V=2.0: 着地 0/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+V375T15h15_30 JUMP_V=1.5: 着地 1/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+V375T15h15_30 JUMP_V=2.0: 着地 2/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+V375T15h15_40 JUMP_V=1.5: 着地 0/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+V375T15h15_40 JUMP_V=2.0: 着地 2/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+V35T10h15_30 JUMP_V=1.5: 着地 4/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+V35T10h15_30 JUMP_V=2.0: 着地 5/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+V35T10h15_60 JUMP_V=1.5: 着地 4/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+V35T10h15_60 JUMP_V=2.0: 着地 5/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+V35T10h15_40 JUMP_V=1.5: 着地 4/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+V35T10h15_40 JUMP_V=2.0: 着地 5/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+V35T10h15_20 JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+V35T10h15_20 JUMP_V=2.0: 着地 5/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+V30T15h15_20 JUMP_V=1.5: 着地 7/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+V30T15h15_20 JUMP_V=2.0: 着地 6/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+V30T15h15_30 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+V30T15h15_30 JUMP_V=2.0: 着地 5/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+V30T15h15_60 JUMP_V=1.5: 着地 7/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+V30T15h15_60 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+V30T15h15_40 JUMP_V=1.5: 着地 5/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+V30T15h15_40 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+V33T125h125_30 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+V33T125h125_30 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+V33T125h125_40 JUMP_V=1.5: 着地 7/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+V33T125h125_40 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+V33T125h125_20 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+V33T125h125_20 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+V33T125h125_60 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+V33T125h125_60 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+V30T125s125_20 v1.5: standing 15/16 on box 15 | jumps {2: 13, 3: 2} | gap at box jump med +0.102 [+0.093,+0.106] | falls m10:2box
+V30T125s125_20 v2.0: standing 16/16 on box 16 | jumps {2: 16} | gap at box jump med +0.105 [+0.083,+0.111] | falls 
+V30T125s125_30 v1.5: standing 13/16 on box 13 | jumps {2: 4, 3: 8, 4: 1} | gap at box jump med +0.105 [+0.084,+0.125] | falls m01:3box m03:1hop m10:1hop
+V30T125s125_30 v2.0: standing 15/16 on box 15 | jumps {2: 13, 3: 2} | gap at box jump med +0.104 [+0.076,+0.119] | falls m00:2box
+V30T125s125_40 v1.5: standing 13/16 on box 13 | jumps {2: 4, 3: 9} | gap at box jump med +0.106 [+0.078,+0.124] | falls m06:3box m11:2hop m13:1hop
+V30T125s125_40 v2.0: standing 13/16 on box 13 | jumps {2: 7, 3: 6} | gap at box jump med +0.097 [+0.075,+0.124] | falls m10:3box m13:2box m15:2box
+V30T125s125_60 v1.5: standing 14/16 on box 14 | jumps {2: 11, 3: 2, 4: 1} | gap at box jump med +0.108 [+0.093,+0.124] | falls m02:2box m14:3box
+V30T125s125_60 v2.0: standing 14/16 on box 14 | jumps {2: 8, 3: 5, 4: 1} | gap at box jump med +0.103 [+0.076,+0.123] | falls m07:2hop m13:2box
+V32T125s125_20 v1.5: standing 16/16 on box 16 | jumps {2: 14, 3: 2} | gap at box jump med +0.102 [+0.093,+0.106] | falls 
+V32T125s125_20 v2.0: standing 16/16 on box 16 | jumps {2: 16} | gap at box jump med +0.105 [+0.083,+0.111] | falls 
+V32T125s125_30 v1.5: standing 13/16 on box 13 | jumps {2: 4, 3: 8, 4: 1} | gap at box jump med +0.105 [+0.084,+0.125] | falls m03:1hop m10:1hop m13:3box
+V32T125s125_30 v2.0: standing 15/16 on box 15 | jumps {2: 13, 3: 2} | gap at box jump med +0.104 [+0.076,+0.119] | falls m00:2box
+V32T125s125_40 v1.5: standing 12/16 on box 12 | jumps {2: 3, 3: 9} | gap at box jump med +0.106 [+0.078,+0.124] | falls m08:2box m11:2hop m12:3box m13:1hop
+V32T125s125_40 v2.0: standing 16/16 on box 16 | jumps {2: 9, 3: 7} | gap at box jump med +0.097 [+0.075,+0.124] | falls 
+V32T125s125_60 v1.5: standing 16/16 on box 16 | jumps {2: 12, 3: 3, 4: 1} | gap at box jump med +0.108 [+0.093,+0.124] | falls 
+V32T125s125_60 v2.0: standing 12/16 on box 12 | jumps {2: 7, 3: 4, 4: 1} | gap at box jump med +0.103 [+0.076,+0.123] | falls m01:2box m07:2hop m10:2box m14:3box
+V33T125s125_20 v1.5: standing 15/16 on box 15 | jumps {2: 13, 3: 2} | gap at box jump med +0.102 [+0.093,+0.106] | falls m02:2box
+V33T125s125_20 v2.0: standing 16/16 on box 16 | jumps {2: 16} | gap at box jump med +0.105 [+0.083,+0.111] | falls 
+V33T125s125_30 v1.5: standing 13/16 on box 13 | jumps {2: 4, 3: 8, 4: 1} | gap at box jump med +0.105 [+0.084,+0.125] | falls m03:1hop m06:3box m10:1hop
+V33T125s125_30 v2.0: standing 16/16 on box 16 | jumps {2: 14, 3: 2} | gap at box jump med +0.104 [+0.076,+0.119] | falls 
+V33T125s125_40 v1.5: standing 14/16 on box 14 | jumps {2: 4, 3: 10} | gap at box jump med +0.106 [+0.078,+0.124] | falls m11:2hop m13:1hop
+V33T125s125_40 v2.0: standing 15/16 on box 15 | jumps {2: 8, 3: 7} | gap at box jump med +0.097 [+0.075,+0.124] | falls m13:2box
+V33T125s125_60 v1.5: standing 16/16 on box 16 | jumps {2: 12, 3: 3, 4: 1} | gap at box jump med +0.108 [+0.093,+0.124] | falls 
+V33T125s125_60 v2.0: standing 14/16 on box 14 | jumps {2: 8, 3: 5, 4: 1} | gap at box jump med +0.103 [+0.076,+0.123] | falls m07:2hop m12:2box
+V35T10s15_20 v1.5: standing 9/16 on box 9 | jumps {2: 8, 3: 1} | gap at box jump med +0.102 [+0.093,+0.106] | falls m01:2box m02:2box m04:2box m05:2box m06:2box m08:3box m09:2box
+V35T10s15_20 v2.0: standing 9/16 on box 9 | jumps {2: 9} | gap at box jump med +0.105 [+0.083,+0.111] | falls m02:2box m03:2box m06:2box m07:2box m10:2box m12:2box m13:2box
+V35T10s15_30 v1.5: standing 6/16 on box 6 | jumps {2: 1, 3: 5} | gap at box jump med +0.105 [+0.084,+0.125] | falls m01:3box m02:3box m03:1hop m04:2box m06:3box m07:4box m10:1hop m12:2box m14:3box m15:2box
+V35T10s15_30 v2.0: standing 11/16 on box 11 | jumps {2: 9, 3: 2} | gap at box jump med +0.104 [+0.076,+0.119] | falls m00:2box m01:2box m02:2box m06:2box m14:2box
+V35T10s15_40 v1.5: standing 6/16 on box 6 | jumps {2: 2, 3: 4} | gap at box jump med +0.106 [+0.078,+0.124] | falls m00:3box m02:3box m03:3box m04:3box m06:3box m08:2box m10:2box m11:2hop m12:3box m13:1hop
+V35T10s15_40 v2.0: standing 7/16 on box 7 | jumps {2: 5, 3: 2} | gap at box jump med +0.097 [+0.075,+0.124] | falls m00:3box m02:3box m04:3box m07:3box m08:2box m09:2box m13:2box m14:3box m15:2box
+V35T10s15_60 v1.5: standing 7/16 on box 7 | jumps {2: 4, 3: 2, 4: 1} | gap at box jump med +0.108 [+0.093,+0.124] | falls m01:2box m02:2box m04:2box m05:2box m06:2box m10:2box m11:3box m12:2box m15:2box
+V35T10s15_60 v2.0: standing 5/16 on box 5 | jumps {2: 2, 3: 2, 4: 1} | gap at box jump med +0.103 [+0.076,+0.123] | falls m01:2box m02:2box m05:2box m06:2box m07:2hop m09:3box m10:2box m12:2box m13:2box m14:3box m15:3box
+V375T15s15_20 v1.5: standing 2/16 on box 2 | jumps {2: 1, 3: 1} | gap at box jump med +0.102 [+0.093,+0.106] | falls m00:2box m01:2box m02:2box m03:2box m04:2box m05:2box m06:2box m07:2box m09:2box m10:2box m12:2box m13:2box m14:2box m15:3box
+V375T15s15_20 v2.0: standing 3/16 on box 3 | jumps {2: 3} | gap at box jump med +0.105 [+0.083,+0.111] | falls m00:2box m01:2box m02:2box m04:2box m05:2box m06:2box m07:2box m09:2box m10:2box m12:2box m13:2box m14:2box m15:2box
+V375T15s15_30 v1.5: standing 1/16 on box 1 | jumps {3: 1} | gap at box jump med +0.105 [+0.084,+0.125] | falls m00:2box m01:3box m02:3box m03:1hop m04:2box m05:3box m06:3box m07:4box m08:3box m09:3box m10:1hop m11:3box m12:2box m14:3box m15:2box
+V375T15s15_30 v2.0: standing 2/16 on box 2 | jumps {2: 2} | gap at box jump med +0.104 [+0.076,+0.119] | falls m01:2box m02:2box m03:2box m04:2box m05:2box m06:2box m07:2box m08:3box m09:2box m10:3box m12:2box m13:2box m14:2box m15:2box
+V375T15s15_40 v1.5: standing 1/16 on box 1 | jumps {2: 1} | gap at box jump med +0.106 [+0.078,+0.124] | falls m00:3box m01:3box m02:3box m03:3box m04:3box m05:2box m06:3box m07:3box m08:2box m09:2box m11:2hop m12:3box m13:1hop m14:3box m15:3box
+V375T15s15_40 v2.0: standing 2/16 on box 2 | jumps {2: 2} | gap at box jump med +0.097 [+0.075,+0.124] | falls m00:3box m01:2box m02:3box m03:3box m04:3box m05:2box m06:2box m07:3box m09:2box m10:3box m11:2box m12:2box m14:3box m15:2box
+V375T15s15_60 v1.5: standing 2/16 on box 2 | jumps {2: 1, 3: 1} | gap at box jump med +0.108 [+0.093,+0.124] | falls m00:2box m01:2box m02:2box m03:4box m04:2box m05:2box m06:2box m07:3box m08:2box m10:2box m12:2box m13:2box m14:3box m15:2box
+V375T15s15_60 v2.0: standing 3/16 on box 3 | jumps {2: 2, 3: 1} | gap at box jump med +0.103 [+0.076,+0.123] | falls m00:3box m01:2box m02:2box m03:4box m04:2box m05:2box m06:2box m07:2hop m10:2box m11:3box m12:2box m14:3box m15:3box
+V30T15s15_20 v1.5: standing 12/16 on box 12 | jumps {2: 10, 3: 2} | gap at box jump med +0.102 [+0.093,+0.106] | falls m00:2box m05:2box m10:2box m14:2box
+V30T15s15_20 v2.0: standing 15/16 on box 15 | jumps {2: 15} | gap at box jump med +0.105 [+0.083,+0.111] | falls m06:2box
+V30T15s15_30 v1.5: standing 11/16 on box 11 | jumps {2: 4, 3: 7} | gap at box jump med +0.105 [+0.084,+0.125] | falls m01:3box m03:1hop m07:4box m09:3box m10:1hop
+V30T15s15_30 v2.0: standing 13/16 on box 13 | jumps {2: 12, 3: 1} | gap at box jump med +0.104 [+0.076,+0.119] | falls m00:2box m05:2box m10:3box
+V30T15s15_40 v1.5: standing 10/16 on box 10 | jumps {2: 2, 3: 8} | gap at box jump med +0.106 [+0.078,+0.124] | falls m04:3box m06:3box m09:2box m10:2box m11:2hop m13:1hop
+V30T15s15_40 v2.0: standing 10/16 on box 10 | jumps {2: 5, 3: 5} | gap at box jump med +0.097 [+0.075,+0.124] | falls m04:3box m05:2box m06:2box m08:2box m10:3box m13:2box
+V30T15s15_60 v1.5: standing 14/16 on box 14 | jumps {2: 11, 3: 2, 4: 1} | gap at box jump med +0.108 [+0.093,+0.124] | falls m02:2box m14:3box
+V30T15s15_60 v2.0: standing 10/16 on box 10 | jumps {2: 5, 3: 5} | gap at box jump med +0.103 [+0.076,+0.123] | falls m03:4box m04:2box m05:2box m07:2hop m08:2box m13:2box
+V30T125h125_20 v1.5: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.099 [+0.095,+0.106] | falls 
+V30T125h125_20 v2.0: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.102 [+0.086,+0.109] | falls 
+V30T125h125_30 v1.5: standing 8/8 on box 8 | jumps {1: 1, 2: 3, 3: 4} | gap at box jump med +0.101 [+0.087,+0.124] | falls 
+V30T125h125_30 v2.0: standing 7/8 on box 7 | jumps {2: 7} | gap at box jump med +0.089 [+0.078,+0.123] | falls m05:2box
+V30T125h125_40 v1.5: standing 6/8 on box 6 | jumps {3: 4, 4: 2} | gap at box jump med +0.104 [+0.083,+0.120] | falls m02:3box m07:3box
+V30T125h125_40 v2.0: standing 8/8 on box 8 | jumps {1: 1, 2: 4, 3: 3} | gap at box jump med +0.104 [+0.086,+0.118] | falls 
+V30T125h125_60 v1.5: standing 6/8 on box 6 | jumps {2: 4, 3: 1, 4: 1} | gap at box jump med +0.105 [+0.076,+0.122] | falls m03:3box m04:2box
+V30T125h125_60 v2.0: standing 8/8 on box 8 | jumps {2: 4, 3: 4} | gap at box jump med +0.104 [+0.089,+0.121] | falls 
+V32T125h125_20 v1.5: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.099 [+0.095,+0.106] | falls 
+V32T125h125_20 v2.0: standing 7/8 on box 7 | jumps {2: 7} | gap at box jump med +0.102 [+0.086,+0.109] | falls m04:2box
+V32T125h125_30 v1.5: standing 8/8 on box 8 | jumps {1: 1, 2: 3, 3: 4} | gap at box jump med +0.101 [+0.087,+0.124] | falls 
+V32T125h125_30 v2.0: standing 6/8 on box 6 | jumps {2: 6} | gap at box jump med +0.089 [+0.078,+0.123] | falls m02:2box m04:2box
+V32T125h125_40 v1.5: standing 8/8 on box 8 | jumps {3: 6, 4: 2} | gap at box jump med +0.104 [+0.083,+0.120] | falls 
+V32T125h125_40 v2.0: standing 8/8 on box 8 | jumps {1: 1, 2: 4, 3: 3} | gap at box jump med +0.104 [+0.086,+0.118] | falls 
+V32T125h125_60 v1.5: standing 8/8 on box 8 | jumps {2: 5, 3: 2, 4: 1} | gap at box jump med +0.105 [+0.076,+0.122] | falls 
+V32T125h125_60 v2.0: standing 8/8 on box 8 | jumps {2: 4, 3: 4} | gap at box jump med +0.104 [+0.089,+0.121] | falls 
+V33T125h125_20 v1.5: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.099 [+0.095,+0.106] | falls 
+V33T125h125_20 v2.0: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.102 [+0.086,+0.109] | falls 
+V33T125h125_30 v1.5: standing 8/8 on box 8 | jumps {1: 1, 2: 3, 3: 4} | gap at box jump med +0.101 [+0.087,+0.124] | falls 
+V33T125h125_30 v2.0: standing 7/8 on box 7 | jumps {2: 7} | gap at box jump med +0.089 [+0.078,+0.123] | falls m05:2box
+V33T125h125_40 v1.5: standing 7/8 on box 7 | jumps {3: 5, 4: 2} | gap at box jump med +0.104 [+0.083,+0.120] | falls m02:3box
+V33T125h125_40 v2.0: standing 8/8 on box 8 | jumps {1: 1, 2: 4, 3: 3} | gap at box jump med +0.104 [+0.086,+0.118] | falls 
+V33T125h125_60 v1.5: standing 8/8 on box 8 | jumps {2: 5, 3: 2, 4: 1} | gap at box jump med +0.105 [+0.076,+0.122] | falls 
+V33T125h125_60 v2.0: standing 8/8 on box 8 | jumps {2: 4, 3: 4} | gap at box jump med +0.104 [+0.089,+0.121] | falls 
+V35T10h15_20 v1.5: standing 6/8 on box 6 | jumps {2: 6} | gap at box jump med +0.099 [+0.095,+0.106] | falls m02:2box m03:2box
+V35T10h15_20 v2.0: standing 5/8 on box 5 | jumps {2: 5} | gap at box jump med +0.102 [+0.086,+0.109] | falls m00:2box m06:2box m07:2box
+V35T10h15_30 v1.5: standing 4/8 on box 4 | jumps {3: 4} | gap at box jump med +0.100 [+0.087,+0.124] | falls m00:2box m04:3box m05:2box m06:2box
+V35T10h15_30 v2.0: standing 5/8 on box 5 | jumps {2: 5} | gap at box jump med +0.089 [+0.078,+0.123] | falls m03:2box m04:2box m07:2box
+V35T10h15_40 v1.5: standing 4/8 on box 4 | jumps {3: 2, 4: 2} | gap at box jump med +0.104 [+0.083,+0.120] | falls m01:3box m02:3box m03:3box m05:3box
+V35T10h15_40 v2.0: standing 5/8 on box 5 | jumps {1: 1, 2: 3, 3: 1} | gap at box jump med +0.104 [+0.086,+0.118] | falls m03:3box m04:2box m05:3box
+V35T10h15_60 v1.5: standing 4/8 on box 4 | jumps {2: 4} | gap at box jump med +0.105 [+0.076,+0.122] | falls m02:4box m03:3box m04:2box m05:3box
+V35T10h15_60 v2.0: standing 5/8 on box 5 | jumps {2: 2, 3: 3} | gap at box jump med +0.104 [+0.089,+0.121] | falls m02:2box m03:3box m05:2box
+V375T15h15_20 v1.5: standing 1/8 on box 1 | jumps {2: 1} | gap at box jump med +0.099 [+0.095,+0.106] | falls m00:2box m02:2box m03:2box m04:2box m05:2box m06:2box m07:2box
+V375T15h15_20 v2.0: standing 0/8 on box 0 | jumps {} | gap at box jump med +0.102 [+0.086,+0.109] | falls m00:2box m01:2box m02:2box m03:2box m04:2box m05:2box m06:2box m07:2box
+V375T15h15_30 v1.5: standing 1/8 on box 1 | jumps {3: 1} | gap at box jump med +0.100 [+0.087,+0.124] | falls m00:2box m02:3box m03:3box m04:3box m05:2box m06:2box m07:3box
+V375T15h15_30 v2.0: standing 2/8 on box 2 | jumps {2: 2} | gap at box jump med +0.089 [+0.078,+0.123] | falls m01:2box m02:2box m03:2box m05:2box m06:2box m07:2box
+V375T15h15_40 v1.5: standing 0/8 on box 0 | jumps {} | gap at box jump med +0.104 [+0.083,+0.120] | falls m00:3box m01:3box m02:3box m03:3box m04:4box m05:3box m06:4box m07:3box
+V375T15h15_40 v2.0: standing 2/8 on box 2 | jumps {1: 1, 2: 1} | gap at box jump med +0.104 [+0.086,+0.118] | falls m00:2box m01:3box m02:2box m03:3box m05:3box m06:2box
+V375T15h15_60 v1.5: standing 1/8 on box 1 | jumps {2: 1} | gap at box jump med +0.105 [+0.076,+0.122] | falls m00:2box m01:2box m02:4box m03:3box m05:3box m06:2box m07:2box
+V375T15h15_60 v2.0: standing 0/8 on box 0 | jumps {} | gap at box jump med +0.104 [+0.089,+0.121] | falls m00:3box m01:2box m02:2box m03:3box m04:3box m05:2box m06:3box m07:2box
+V30T15h15_20 v1.5: standing 7/8 on box 7 | jumps {2: 7} | gap at box jump med +0.099 [+0.095,+0.106] | falls m06:2box
+V30T15h15_20 v2.0: standing 6/8 on box 6 | jumps {2: 6} | gap at box jump med +0.102 [+0.086,+0.109] | falls m06:2box m07:2box
+V30T15h15_30 v1.5: standing 8/8 on box 8 | jumps {2: 3, 3: 5} | gap at box jump med +0.100 [+0.087,+0.124] | falls 
+V30T15h15_30 v2.0: standing 5/8 on box 5 | jumps {2: 5} | gap at box jump med +0.089 [+0.078,+0.123] | falls m04:2box m05:2box m07:2box
+V30T15h15_40 v1.5: standing 5/8 on box 5 | jumps {3: 4, 4: 1} | gap at box jump med +0.104 [+0.083,+0.120] | falls m02:3box m06:4box m07:3box
+V30T15h15_40 v2.0: standing 8/8 on box 8 | jumps {1: 1, 2: 4, 3: 3} | gap at box jump med +0.104 [+0.086,+0.118] | falls 
+V30T15h15_60 v1.5: standing 7/8 on box 7 | jumps {2: 4, 3: 2, 4: 1} | gap at box jump med +0.105 [+0.076,+0.122] | falls m04:2box
+V30T15h15_60 v2.0: standing 7/8 on box 7 | jumps {2: 4, 3: 3} | gap at box jump med +0.104 [+0.089,+0.121] | falls m03:3box
+BHs125 -> V30T125s125 v1.5: 52/64 -> 55/64  改善 4 悪化 1 z +1.34  悪化 60:m14
+BHs125 -> V30T125s125 v2.0: 53/64 -> 58/64  改善 5 悪化 0 z +2.24  悪化 
+BHs125 -> V32T125s125 v1.5: 52/64 -> 57/64  改善 8 悪化 3 z +1.51  悪化 30:m13 40:m08 40:m12
+BHs125 -> V32T125s125 v2.0: 53/64 -> 59/64  改善 9 悪化 3 z +1.73  悪化 60:m01 60:m10 60:m14
+BHs125 -> V33T125s125 v1.5: 52/64 -> 58/64  改善 8 悪化 2 z +1.90  悪化 20:m02 30:m06
+BHs125 -> V33T125s125 v2.0: 53/64 -> 61/64  改善 9 悪化 1 z +2.53  悪化 60:m12
+BHs15 -> V35T10s15 v1.5: 22/64 -> 28/64  改善 19 悪化 13 z +1.06  悪化 20:m01 20:m04 20:m06 30:m04 30:m12 30:m15 40:m02 40:m08 40:m12 60:m01 60:m04 60:m05 60:m06
+BHs15 -> V35T10s15 v2.0: 26/64 -> 32/64  改善 20 悪化 14 z +1.03  悪化 20:m02 20:m10 30:m01 30:m02 30:m06 30:m14 40:m02 40:m09 60:m01 60:m02 60:m05 60:m06 60:m09 60:m15
+BHs15 -> V375T15s15 v1.5: 22/64 -> 6/64  改善 5 悪化 21 z -3.14  悪化 20:m01 20:m04 20:m06 30:m00 30:m04 30:m05 30:m11 30:m12 30:m15 40:m01 40:m02 40:m07 40:m08 40:m12 40:m15 60:m01 60:m04 60:m05 60:m06 60:m07 60:m13
+BHs15 -> V375T15s15 v2.0: 26/64 -> 10/64  改善 8 悪化 24 z -2.83  悪化 20:m00 20:m01 20:m02 20:m04 20:m05 20:m10 20:m15 30:m01 30:m02 30:m03 30:m06 30:m08 30:m09 30:m13 30:m14 40:m02 40:m09 40:m11 60:m00 60:m01 60:m02 60:m05 60:m06 60:m15
+BHs15 -> V30T15s15 v1.5: 22/64 -> 47/64  改善 25 悪化 0 z +5.00  悪化 
+BHs15 -> V30T15s15 v2.0: 26/64 -> 48/64  改善 23 悪化 1 z +4.49  悪化 60:m05
+V35s15 -> V375T15s15 v1.5: 38/64 -> 6/64  改善 2 悪化 34 z -5.33  悪化 20:m00 20:m03 20:m04 20:m06 20:m07 20:m09 20:m10 20:m12 20:m13 20:m14 20:m15 30:m00 30:m01 30:m04 30:m05 30:m07 30:m08 30:m09 30:m11 40:m00 40:m01 40:m02 40:m04 40:m07 40:m14 40:m15 60:m00 60:m03 60:m05 60:m06 60:m07 60:m08 60:m13 60:m14
+V35s15 -> V375T15s15 v2.0: 47/64 -> 10/64  改善 3 悪化 40 z -5.64  悪化 20:m00 20:m01 20:m02 20:m04 20:m05 20:m06 20:m07 20:m09 20:m10 20:m14 20:m15 30:m02 30:m03 30:m04 30:m05 30:m07 30:m08 30:m09 30:m10 30:m12 30:m13 30:m15 40:m01 40:m02 40:m03 40:m04 40:m05 40:m06 40:m10 40:m11 40:m12 40:m14 40:m15 60:m00 60:m02 60:m03 60:m04 60:m06 60:m11 60:m14
+BHh125 -> V30T125h125 v1.5: 27/32 -> 28/32  改善 1 悪化 0 z +1.00  悪化 
+BHh125 -> V30T125h125 v2.0: 20/32 -> 31/32  改善 11 悪化 0 z +3.32  悪化 
+BHh125 -> V32T125h125 v1.5: 27/32 -> 32/32  改善 5 悪化 0 z +2.24  悪化 
+BHh125 -> V32T125h125 v2.0: 20/32 -> 29/32  改善 11 悪化 2 z +2.50  悪化 20:m04 30:m02
+BHh125 -> V33T125h125 v1.5: 27/32 -> 31/32  改善 4 悪化 0 z +2.00  悪化 
+BHh125 -> V33T125h125 v2.0: 20/32 -> 31/32  改善 11 悪化 0 z +3.32  悪化 
+BHh15 -> V35T10h15 v1.5: 12/32 -> 18/32  改善 13 悪化 7 z +1.34  悪化 20:m02 30:m00 30:m06 40:m03 40:m05 60:m02 60:m05
+BHh15 -> V35T10h15 v2.0: 13/32 -> 20/32  改善 9 悪化 2 z +2.11  悪化 40:m03 60:m05
+BHh15 -> V375T15h15 v1.5: 12/32 -> 3/32  改善 3 悪化 12 z -2.32  悪化 20:m02 30:m00 30:m03 30:m06 40:m00 40:m03 40:m05 60:m01 60:m02 60:m05 60:m06 60:m07
+BHh15 -> V375T15h15 v2.0: 13/32 -> 4/32  改善 3 悪化 12 z -2.32  悪化 20:m01 20:m03 30:m06 40:m00 40:m01 40:m03 40:m06 60:m00 60:m01 60:m04 60:m05 60:m06
+BHh15 -> V30T15h15 v1.5: 12/32 -> 27/32  改善 15 悪化 0 z +3.87  悪化 
+BHh15 -> V30T15h15 v2.0: 13/32 -> 26/32  改善 13 悪化 0 z +3.61  悪化 
+V35h15 -> V375T15h15 v1.5: 29/32 -> 3/32  改善 0 悪化 26 z -5.10  悪化 20:m00 20:m02 20:m04 20:m05 20:m06 20:m07 30:m00 30:m02 30:m03 30:m05 30:m06 30:m07 40:m00 40:m01 40:m02 40:m03 40:m04 40:m06 40:m07 60:m00 60:m01 60:m02 60:m03 60:m05 60:m06 60:m07
+V35h15 -> V375T15h15 v2.0: 28/32 -> 4/32  改善 1 悪化 25 z -4.71  悪化 20:m00 20:m01 20:m02 20:m03 20:m04 20:m05 20:m06 20:m07 30:m02 30:m03 30:m05 30:m06 30:m07 40:m00 40:m01 40:m03 40:m05 40:m06 60:m00 60:m01 60:m02 60:m03 60:m04 60:m06 60:m07
+#### JB72_DONE

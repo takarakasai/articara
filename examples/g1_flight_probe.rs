@@ -275,6 +275,10 @@ fn main() {
     // every jump, the short backward hops that close the gap fell (5 cm box
     // 0.20 m ahead, 2.0: 15/16 fell on the first hop).
     let jump_box_tuck = env_f64("JUMP_BOX_TUCK", 0.0);
+    // JUMP_BOX_TUCK_TAB ("h:d,h:d,...", unset = off): JUMP_BOX_TUCK read
+    // off the box height (JUMP_BOX's second value), piecewise-linear and
+    // clamped at the ends like JUMP_VX_TAB.
+    let jump_box_tuck = tab("JUMP_BOX_TUCK_TAB").map_or(jump_box_tuck, |t| interp(&t, jump_box.map_or(0.0, |b| b.1)));
     // JUMP_BOX_STIFF=1: the jump onto the box crouches on the stiff contact
     // like a first jump, even with JUMP_REPEAT_SOFT_CROUCH. Measured
     // 2026-11-08 (5 cm box after flat hops, 2.0): on the soft contact the
@@ -296,7 +300,15 @@ fn main() {
     // push line is tilted so vx is kept). Measured 2026-11-09 (jb14, BX on a
     // 7.5 / 10 cm box): lift-off vz 1.16 m/s at 1.5 (CoM up 6.9 cm) and 1.40
     // at 2.0 (10.0 cm); the toe hits the box face or corner.
-    let jump_box_v = std::env::var("JUMP_BOX_V").ok().map(|s| s.trim().parse::<f64>().unwrap());
+    // JUMP_BOX_V_TAB ("h:v,h:v,...", unset = off): JUMP_BOX_V read off the
+    // box height (JUMP_BOX's second value) in place of JUMP_BOX_V. Measured
+    // 2026-11-11 (jb71, BH): 3.0 leaves the toe on the face of a 15 cm box
+    // (34 / 39 of 96 stand), 3.5 stands 67 / 75 there but on a 12.5 cm box
+    // the trunk lands pitched further forward, the rise brings the CoM back
+    // behind the ankles and 1.5 drops from 79 to 62 of 96.
+    let jump_box_v = tab("JUMP_BOX_V_TAB")
+        .map(|t| interp(&t, jump_box.map_or(0.0, |b| b.1)))
+        .or_else(|| std::env::var("JUMP_BOX_V").ok().map(|s| s.trim().parse::<f64>().unwrap()));
     let jump_box_crouch = std::env::var("JUMP_BOX_CROUCH").ok().map(|s| s.trim().parse::<f64>().unwrap());
     let crouch_base = crouch;
     // JUMP_BOX_V_TABS=1: read JUMP_VX_TAB and JUMP_LEAN_TAB at JUMP_BOX_V
