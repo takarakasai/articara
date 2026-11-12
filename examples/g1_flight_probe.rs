@@ -668,8 +668,16 @@ fn main() {
     // 2026-11-12 (TK, 20 cm box): the box landing comes in with the ankles
     // 4 cm ahead of the CoM, the legs 25 cm short of standing, and the
     // members with a small lift-off pitch momentum (h_y <= 0.6) cannot
-    // carry the CoM over the feet in the rise and fall back (26 of 48).
+    // carry the CoM over the feet in the rise and fall back (27 of 48).
     let jump_box_capture = tab("JUMP_BOX_CAPTURE_TAB").map(|t| interp(&t, jump_box.map_or(0.0, |b| b.1)));
+    // JUMP_BOX_CAPTURE_HY_TAB ("hy:k,hy:k,...", unset = off): on the jump
+    // onto a box at least JUMP_BOX_CAPTURE_HY_H m high (default 0), the
+    // FLIGHT_FEET_CAPTURE read off the pitch momentum h_y at lift-off
+    // (piecewise-linear, clamped at the ends), in place of the above.
+    // Measured 2026-11-12 (jb77, TK on a 20 cm box, landings past the edge):
+    // k 0.55 / 0.25 fell 24/44 / 0/40 of the members with h_y <= 0.6 but
+    // 5/20 / 10/13 of those with h_y >= 1.0; one k cannot serve both.
+    let jump_box_capture_hy = tab("JUMP_BOX_CAPTURE_HY_TAB").filter(|_| jump_box.map_or(0.0, |b| b.1) >= env_f64("JUMP_BOX_CAPTURE_HY_H", 0.0));
     // FLIGHT_FEET_WIDTH=w (m, 0 = off): in flight, also carry the soles'
     // lateral offsets from the CoM to +w/2 (left) and -w/2 (right),
     // smoothstep over FLIGHT_FEET_CAPTURE_T s from lift-off. Measured
@@ -914,6 +922,7 @@ fn main() {
     let mut prev_com_vel: Option<na::Vector3<f64>> = None;
     let mut flight_t0: Option<f64> = None;
     let mut h_ang0: Option<na::Vector3<f64>> = None;
+    let mut lift_off_hy = 0.0_f64; // h_y at the last lift-off
     let mut flight_stats_t0: Option<f64> = None;
     // Flight statistics.
     let (mut n_flight, mut n_flight_degraded) = (0u32, 0u32);
@@ -1265,6 +1274,7 @@ fn main() {
                 let fz: Vec<String> = (0..2).map(|k| format!("{:+.3}", misarta::se3::translation(&data.oMi[feet[k]]).z)).collect();
                 let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
                 let h = &cmm * v_dvec;
+                lift_off_hy = h[1];
                 let (r, pch, _) = st.body_quat.euler_angles();
                 println!("  [lift-off] t={t:.3} com ({:+.3}, z {:.4}) v ({:+.3}, {:+.3}), foot x {:?} z {:?}, h_ang ({:+.3},{:+.3},{:+.3}), roll {r:+.3} pitch {pch:+.3}", com.x, com.z, com_vel.x, com_vel.z, fx, fz, h[0], h[1], h[2]);
             }
@@ -1936,7 +1946,11 @@ fn main() {
             names.push("fz sym");
         }
         if flight && flight_feet && let Some(mut off) = feet_off {
-            let flight_feet_capture = if box_jump_now { jump_box_capture.unwrap_or(flight_feet_capture) } else { flight_feet_capture };
+            let flight_feet_capture = if box_jump_now {
+                jump_box_capture_hy.as_ref().map(|t| interp(t, lift_off_hy)).or(jump_box_capture).unwrap_or(flight_feet_capture)
+            } else {
+                flight_feet_capture
+            };
             if flight_feet_capture > 0.0 && let Some(t0f) = flight_t0 {
                 let h = (stand_z - (fz_stand[0].min(fz_stand[1]) - prof.sole_below_origin)).max(0.3);
                 let b = ((t - t0f) / flight_feet_capture_t).clamp(0.0, 1.0);
