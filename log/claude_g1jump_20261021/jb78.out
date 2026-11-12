@@ -1,0 +1,73 @@
+HYah20_30 JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+HYah20_30 JUMP_V=2.0: 着地 5/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+HYbh20_40 JUMP_V=1.5: 着地 5/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+HYbh20_40 JUMP_V=2.0: 着地 6/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+HYbh20_30 JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+HYbh20_30 JUMP_V=2.0: 着地 6/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+HYah20_40 JUMP_V=1.5: 着地 5/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+HYah20_40 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+HYbh20_20 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+HYbh20_20 JUMP_V=2.0: 着地 5/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+HYah20_20 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+HYah20_20 JUMP_V=2.0: 着地 6/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+HYbh20_60 JUMP_V=1.5: 着地 7/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+HYbh20_60 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+HYah20_60 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+HYah20_60 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+HYbs20_60 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+HYbs20_60 JUMP_V=2.0: 着地 11/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+HYas20_60 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+HYas20_60 JUMP_V=2.0: 着地 11/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+HYas20_30 JUMP_V=1.5: 着地 11/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+HYas20_30 JUMP_V=2.0: 着地 14/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+HYbs20_30 JUMP_V=1.5: 着地 12/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+HYbs20_30 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+HYbs20_20 JUMP_V=1.5: 着地 12/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+HYbs20_20 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+HYbs20_40 JUMP_V=1.5: 着地 14/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+HYbs20_40 JUMP_V=2.0: 着地 13/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+HYas20_40 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+HYas20_40 JUMP_V=2.0: 着地 14/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+HYas20_20 JUMP_V=1.5: 着地 15/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+HYas20_20 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+HYas20_20 v1.5: standing 15/16 on box 15 | jumps {2: 13, 3: 2} | gap at box jump med +0.102 [+0.093,+0.106] | falls m02:2box
+HYas20_20 v2.0: standing 15/16 on box 15 | jumps {2: 15} | gap at box jump med +0.105 [+0.083,+0.111] | falls m08:2box
+HYas20_30 v1.5: standing 11/16 on box 11 | jumps {2: 4, 3: 6, 4: 1} | gap at box jump med +0.105 [+0.084,+0.125] | falls m03:1hop m06:3box m09:3box m10:2hop m13:3box
+HYas20_30 v2.0: standing 14/16 on box 14 | jumps {2: 12, 3: 2} | gap at box jump med +0.104 [+0.076,+0.119] | falls m01:2box m09:2box
+HYas20_40 v1.5: standing 13/16 on box 13 | jumps {2: 4, 3: 9} | gap at box jump med +0.110 [+0.078,+0.124] | falls m11:3box m13:1hop m14:3box
+HYas20_40 v2.0: standing 14/16 on box 14 | jumps {2: 8, 3: 6} | gap at box jump med +0.097 [+0.075,+0.124] | falls m01:2box m10:3box
+HYas20_60 v1.5: standing 13/16 on box 13 | jumps {2: 9, 3: 3, 4: 1} | gap at box jump med +0.108 [+0.093,+0.124] | falls m02:2box m12:2box m13:2box
+HYas20_60 v2.0: standing 11/16 on box 11 | jumps {2: 6, 3: 5} | gap at box jump med +0.103 [+0.076,+0.123] | falls m01:2box m03:4box m07:2hop m12:2box m13:2box
+K200s20 -> HYas20 v1.5: 45/64 -> 52/64  改善 8 悪化 1 z +2.33  悪化 40:m14
+K200s20 -> HYas20 v2.0: 49/64 -> 54/64  改善 10 悪化 5 z +1.29  悪化 30:m01 30:m09 40:m01 60:m01 60:m03
+HYah20_20 v1.5: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.099 [+0.095,+0.106] | falls 
+HYah20_20 v2.0: standing 6/8 on box 6 | jumps {2: 6} | gap at box jump med +0.102 [+0.086,+0.109] | falls m00:2box m07:2box
+HYah20_30 v1.5: standing 6/8 on box 6 | jumps {2: 3, 3: 3} | gap at box jump med +0.098 [+0.087,+0.124] | falls m04:3box m07:3box
+HYah20_30 v2.0: standing 5/8 on box 5 | jumps {2: 5} | gap at box jump med +0.089 [+0.078,+0.123] | falls m01:2box m04:2box m05:2box
+HYah20_40 v1.5: standing 5/8 on box 5 | jumps {3: 4, 4: 1} | gap at box jump med +0.104 [+0.083,+0.120] | falls m00:3box m02:3box m04:4box
+HYah20_40 v2.0: standing 7/8 on box 7 | jumps {2: 4, 3: 3} | gap at box jump med +0.104 [+0.086,+0.118] | falls m07:1hop
+HYah20_60 v1.5: standing 8/8 on box 8 | jumps {2: 5, 3: 2, 4: 1} | gap at box jump med +0.105 [+0.076,+0.122] | falls 
+HYah20_60 v2.0: standing 7/8 on box 7 | jumps {2: 3, 3: 4} | gap at box jump med +0.104 [+0.089,+0.121] | falls m05:2box
+K200h20 -> HYah20 v1.5: 25/32 -> 27/32  改善 4 悪化 2 z +0.82  悪化 30:m04 40:m00
+K200h20 -> HYah20 v2.0: 22/32 -> 25/32  改善 4 悪化 1 z +1.34  悪化 30:m01
+HYbs20_20 v1.5: standing 12/16 on box 12 | jumps {2: 11, 3: 1} | gap at box jump med +0.102 [+0.093,+0.106] | falls m02:2box m08:3box m11:2box m13:2box
+HYbs20_20 v2.0: standing 15/16 on box 15 | jumps {2: 15} | gap at box jump med +0.105 [+0.083,+0.111] | falls m08:2box
+HYbs20_30 v1.5: standing 12/16 on box 12 | jumps {2: 3, 3: 8, 4: 1} | gap at box jump med +0.105 [+0.084,+0.125] | falls m03:1hop m06:3box m10:2hop m12:2box
+HYbs20_30 v2.0: standing 15/16 on box 15 | jumps {2: 13, 3: 2} | gap at box jump med +0.104 [+0.076,+0.119] | falls m01:2box
+HYbs20_40 v1.5: standing 14/16 on box 14 | jumps {2: 4, 3: 10} | gap at box jump med +0.110 [+0.078,+0.124] | falls m11:3box m13:1hop
+HYbs20_40 v2.0: standing 13/16 on box 13 | jumps {2: 7, 3: 6} | gap at box jump med +0.097 [+0.075,+0.124] | falls m01:2box m08:2box m10:3box
+HYbs20_60 v1.5: standing 13/16 on box 13 | jumps {2: 9, 3: 3, 4: 1} | gap at box jump med +0.108 [+0.093,+0.124] | falls m02:2box m12:2box m13:2box
+HYbs20_60 v2.0: standing 11/16 on box 11 | jumps {2: 6, 3: 5} | gap at box jump med +0.103 [+0.076,+0.123] | falls m01:2box m03:4box m07:2hop m12:2box m13:2box
+K200s20 -> HYbs20 v1.5: 45/64 -> 51/64  改善 10 悪化 4 z +1.60  悪化 20:m08 20:m11 20:m13 30:m12
+K200s20 -> HYbs20 v2.0: 49/64 -> 54/64  改善 10 悪化 5 z +1.29  悪化 30:m01 40:m01 40:m08 60:m01 60:m03
+HYbh20_20 v1.5: standing 8/8 on box 8 | jumps {2: 8} | gap at box jump med +0.099 [+0.095,+0.106] | falls 
+HYbh20_20 v2.0: standing 5/8 on box 5 | jumps {2: 5} | gap at box jump med +0.102 [+0.086,+0.109] | falls m00:2box m02:2box m07:2box
+HYbh20_30 v1.5: standing 6/8 on box 6 | jumps {2: 3, 3: 3} | gap at box jump med +0.098 [+0.087,+0.124] | falls m02:3box m07:3box
+HYbh20_30 v2.0: standing 6/8 on box 6 | jumps {2: 6} | gap at box jump med +0.089 [+0.078,+0.123] | falls m01:2box m05:2box
+HYbh20_40 v1.5: standing 5/8 on box 5 | jumps {3: 4, 4: 1} | gap at box jump med +0.104 [+0.083,+0.120] | falls m00:3box m02:3box m04:4box
+HYbh20_40 v2.0: standing 6/8 on box 6 | jumps {2: 4, 3: 2} | gap at box jump med +0.104 [+0.086,+0.118] | falls m05:3box m07:1hop
+HYbh20_60 v1.5: standing 7/8 on box 7 | jumps {2: 5, 3: 1, 4: 1} | gap at box jump med +0.105 [+0.076,+0.122] | falls m05:3box
+HYbh20_60 v2.0: standing 7/8 on box 7 | jumps {2: 3, 3: 4} | gap at box jump med +0.104 [+0.089,+0.121] | falls m05:2box
+K200h20 -> HYbh20 v1.5: 25/32 -> 26/32  改善 4 悪化 3 z +0.38  悪化 30:m02 40:m00 60:m05
+K200h20 -> HYbh20 v2.0: 22/32 -> 24/32  改善 5 悪化 3 z +0.71  悪化 20:m02 30:m01 40:m05
+#### JB78_DONE
