@@ -1,0 +1,109 @@
+S130h20_20 JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+S130h20_20 JUMP_V=2.0: 着地 5/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+S130h20_30 JUMP_V=1.5: 着地 8/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+S130h20_30 JUMP_V=2.0: 着地 4/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+S130h20_40 JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+S130h20_40 JUMP_V=2.0: 着地 6/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+S130h20_60 JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+S130h20_60 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+S140s20_20 JUMP_V=1.5: 着地 7/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+S140s20_20 JUMP_V=2.0: 着地 1/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+S140s20_30 JUMP_V=1.5: 着地 5/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+S140s20_30 JUMP_V=2.0: 着地 6/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+S140s20_40 JUMP_V=1.5: 着地 5/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+S140s20_40 JUMP_V=2.0: 着地 5/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+S140s20_60 JUMP_V=1.5: 着地 9/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+S140s20_60 JUMP_V=2.0: 着地 4/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+S135s20_60 JUMP_V=1.5: 着地 8/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+S135s20_60 JUMP_V=2.0: 着地 8/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+S135s20_30 JUMP_V=1.5: 着地 9/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+S135s20_30 JUMP_V=2.0: 着地 11/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+S135s20_40 JUMP_V=1.5: 着地 9/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+S135s20_40 JUMP_V=2.0: 着地 12/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+S130s20_30 JUMP_V=1.5: 着地 11/16  飛ばず 0  離地速度中央値 0.639  |h_y|中央値 0.62  両足同時着地 5/16
+S130s20_30 JUMP_V=2.0: 着地 12/16  飛ばず 0  離地速度中央値 1.024  |h_y|中央値 0.54  両足同時着地 4/16
+S130s20_40 JUMP_V=1.5: 着地 9/16  飛ばず 0  離地速度中央値 1.183  |h_y|中央値 0.27  両足同時着地 0/16
+S130s20_40 JUMP_V=2.0: 着地 13/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.46  両足同時着地 0/16
+S135s20_20 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+S135s20_20 JUMP_V=2.0: 着地 12/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+S130s20_60 JUMP_V=1.5: 着地 13/16  飛ばず 0  離地速度中央値 1.174  |h_y|中央値 0.45  両足同時着地 0/16
+S130s20_60 JUMP_V=2.0: 着地 12/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+S130s20_20 JUMP_V=1.5: 着地 16/16  飛ばず 0  離地速度中央値 0.683  |h_y|中央値 0.49  両足同時着地 5/16
+S130s20_20 JUMP_V=2.0: 着地 14/16  飛ばず 0  離地速度中央値 0.981  |h_y|中央値 0.55  両足同時着地 4/16
+S140h20_20 JUMP_V=1.5: 着地 3/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+S140h20_20 JUMP_V=2.0: 着地 0/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+S140h20_40 JUMP_V=1.5: 着地 4/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+S140h20_40 JUMP_V=2.0: 着地 0/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+S140h20_30 JUMP_V=1.5: 着地 1/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+S140h20_30 JUMP_V=2.0: 着地 5/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+S140h20_60 JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+S140h20_60 JUMP_V=2.0: 着地 0/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+S135h20_60 JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 1.187  |h_y|中央値 0.50  両足同時着地 0/8
+S135h20_60 JUMP_V=2.0: 着地 3/8  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.58  両足同時着地 0/8
+S135h20_40 JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.33  両足同時着地 0/8
+S135h20_40 JUMP_V=2.0: 着地 4/8  飛ばず 0  離地速度中央値 1.382  |h_y|中央値 0.39  両足同時着地 0/8
+S135h20_30 JUMP_V=1.5: 着地 5/8  飛ばず 0  離地速度中央値 0.799  |h_y|中央値 0.62  両足同時着地 2/8
+S135h20_30 JUMP_V=2.0: 着地 6/8  飛ばず 0  離地速度中央値 1.133  |h_y|中央値 0.43  両足同時着地 2/8
+S135h20_20 JUMP_V=1.5: 着地 6/8  飛ばず 0  離地速度中央値 0.670  |h_y|中央値 0.52  両足同時着地 2/8
+S135h20_20 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.032  |h_y|中央値 0.53  両足同時着地 2/8
+S130s20_20 v1.5: standing 16/16 on box 16 | jumps {2: 14, 3: 2} | gap - | falls 
+S130s20_20 v2.0: standing 14/16 on box 14 | jumps {2: 14} | gap - | falls m01:2hop m03:2hop
+S130s20_30 v1.5: standing 11/16 on box 11 | jumps {2: 2, 3: 9} | gap - | falls m03:1hop m07:4hop m10:2hop m12:2hop m15:2hop
+S130s20_30 v2.0: standing 12/16 on box 12 | jumps {2: 11, 3: 1} | gap - | falls m00:2hop m01:2hop m05:2hop m08:3hop
+S130s20_40 v1.5: standing 9/16 on box 9 | jumps {2: 3, 3: 6} | gap - | falls m01:3hop m06:3hop m08:2hop m11:3hop m13:1hop m14:3hop m15:3hop
+S130s20_40 v2.0: standing 13/16 on box 13 | jumps {2: 7, 3: 6} | gap - | falls m09:2hop m11:2hop m14:3hop
+S130s20_60 v1.5: standing 13/16 on box 13 | jumps {2: 9, 3: 3, 4: 1} | gap - | falls m02:2hop m04:2hop m12:2hop
+S130s20_60 v2.0: standing 12/16 on box 12 | jumps {2: 7, 3: 4, 4: 1} | gap - | falls m02:2hop m07:2hop m10:2hop m11:3hop
+HYas20 -> S130s20 v1.5: 52/64 -> 49/64  改善 5 悪化 8 z -0.83  悪化 30:m07 30:m12 30:m15 40:m01 40:m06 40:m08 40:m15 60:m04
+HYas20 -> S130s20 v2.0: 54/64 -> 51/64  改善 8 悪化 11 z -0.69  悪化 20:m01 20:m03 30:m00 30:m05 30:m08 40:m09 40:m11 40:m14 60:m02 60:m10 60:m11
+S130h20_20 v1.5: standing 6/8 on box 6 | jumps {2: 6} | gap - | falls m03:2hop m04:2hop
+S130h20_20 v2.0: standing 5/8 on box 5 | jumps {2: 5} | gap - | falls m02:2hop m05:2hop m07:2hop
+S130h20_30 v1.5: standing 8/8 on box 8 | jumps {2: 3, 3: 5} | gap - | falls 
+S130h20_30 v2.0: standing 4/8 on box 4 | jumps {2: 4} | gap - | falls m01:2hop m04:2hop m05:2hop m07:2hop
+S130h20_40 v1.5: standing 6/8 on box 6 | jumps {3: 5, 4: 1} | gap - | falls m03:3hop m06:4hop
+S130h20_40 v2.0: standing 6/8 on box 6 | jumps {2: 4, 3: 2} | gap - | falls m01:3hop m07:1hop
+S130h20_60 v1.5: standing 6/8 on box 6 | jumps {2: 4, 3: 1, 4: 1} | gap - | falls m04:2hop m05:3hop
+S130h20_60 v2.0: standing 8/8 on box 8 | jumps {2: 4, 3: 4} | gap - | falls 
+HYah20 -> S130h20 v1.5: 27/32 -> 26/32  改善 5 悪化 6 z -0.30  悪化 20:m03 20:m04 40:m03 40:m06 60:m04 60:m05
+HYah20 -> S130h20 v2.0: 25/32 -> 23/32  改善 2 悪化 4 z -0.82  悪化 20:m02 20:m05 30:m07 40:m01
+S135s20_20 v1.5: standing 13/16 on box 13 | jumps {2: 12, 3: 1} | gap - | falls m08:3hop m09:2hop m10:2hop
+S135s20_20 v2.0: standing 12/16 on box 12 | jumps {2: 12} | gap - | falls m00:2hop m02:2hop m11:2hop m14:2hop
+S135s20_30 v1.5: standing 9/16 on box 9 | jumps {2: 3, 3: 6} | gap - | falls m03:1hop m04:2hop m07:4hop m09:3hop m10:2hop m11:3hop m13:3hop
+S135s20_30 v2.0: standing 11/16 on box 11 | jumps {2: 9, 3: 2} | gap - | falls m02:2hop m04:2hop m05:2hop m06:2hop m15:2hop
+S135s20_40 v1.5: standing 9/16 on box 9 | jumps {2: 3, 3: 6} | gap - | falls m01:3hop m02:3hop m06:3hop m08:2hop m11:3hop m13:1hop m14:3hop
+S135s20_40 v2.0: standing 12/16 on box 12 | jumps {2: 6, 3: 6} | gap - | falls m07:3hop m08:2hop m12:2hop m15:2hop
+S135s20_60 v1.5: standing 8/16 on box 8 | jumps {2: 5, 3: 2, 4: 1} | gap - | falls m02:2hop m04:2hop m05:2hop m06:2hop m08:2hop m10:2hop m12:2hop m14:3hop
+S135s20_60 v2.0: standing 8/16 on box 8 | jumps {2: 5, 3: 3} | gap - | falls m00:3hop m01:2hop m02:2hop m03:4hop m06:2hop m07:2hop m10:2hop m11:3hop
+HYas20 -> S135s20 v1.5: 52/64 -> 39/64  改善 3 悪化 16 z -2.98  悪化 20:m08 20:m09 20:m10 30:m04 30:m07 30:m11 40:m01 40:m02 40:m06 40:m08 60:m04 60:m05 60:m06 60:m08 60:m10 60:m14
+HYas20 -> S135s20 v2.0: 54/64 -> 43/64  改善 7 悪化 18 z -2.20  悪化 20:m00 20:m02 20:m11 20:m14 30:m02 30:m04 30:m05 30:m06 30:m15 40:m07 40:m08 40:m12 40:m15 60:m00 60:m02 60:m06 60:m10 60:m11
+S135h20_20 v1.5: standing 6/8 on box 6 | jumps {2: 6} | gap - | falls m04:2hop m07:2hop
+S135h20_20 v2.0: standing 8/8 on box 8 | jumps {2: 8} | gap - | falls 
+S135h20_30 v1.5: standing 5/8 on box 5 | jumps {2: 2, 3: 3} | gap - | falls m00:2hop m02:3hop m04:3hop
+S135h20_30 v2.0: standing 6/8 on box 6 | jumps {2: 6} | gap - | falls m04:2hop m05:2hop
+S135h20_40 v1.5: standing 6/8 on box 6 | jumps {3: 5, 4: 1} | gap - | falls m04:4hop m07:3hop
+S135h20_40 v2.0: standing 4/8 on box 4 | jumps {2: 2, 3: 2} | gap - | falls m02:2hop m03:3hop m04:2hop m07:1hop
+S135h20_60 v1.5: standing 6/8 on box 6 | jumps {2: 4, 3: 2} | gap - | falls m02:4hop m04:2hop
+S135h20_60 v2.0: standing 3/8 on box 3 | jumps {3: 3} | gap - | falls m00:3hop m01:2hop m02:2hop m05:2hop m07:2hop
+HYah20 -> S135h20 v1.5: 27/32 -> 23/32  改善 3 悪化 7 z -1.26  悪化 20:m04 20:m07 30:m00 30:m02 40:m07 60:m02 60:m04
+HYah20 -> S135h20 v2.0: 25/32 -> 21/32  改善 3 悪化 7 z -1.26  悪化 40:m02 40:m03 40:m04 60:m00 60:m01 60:m02 60:m07
+S140s20_20 v1.5: standing 7/16 on box 7 | jumps {2: 7} | gap - | falls m02:2hop m04:2hop m06:2hop m08:3hop m09:2hop m11:2hop m12:2hop m14:2hop m15:3hop
+S140s20_20 v2.0: standing 1/16 on box 1 | jumps {2: 1} | gap - | falls m00:2hop m01:2hop m02:2hop m03:2hop m04:2hop m05:2hop m06:2hop m07:2hop m08:2hop m09:2hop m10:2hop m11:2hop m12:2hop m13:2hop m15:2hop
+S140s20_30 v1.5: standing 5/16 on box 5 | jumps {2: 2, 3: 3} | gap - | falls m01:3hop m02:3hop m03:1hop m04:2hop m06:3hop m07:4hop m08:3hop m09:3hop m10:2hop m11:3hop m15:2hop
+S140s20_30 v2.0: standing 6/16 on box 6 | jumps {2: 6} | gap - | falls m00:2hop m02:2hop m03:2hop m04:2hop m06:2hop m07:2hop m08:3hop m09:2hop m10:3hop m15:2hop
+S140s20_40 v1.5: standing 5/16 on box 5 | jumps {2: 3, 3: 2} | gap - | falls m00:3hop m01:3hop m02:3hop m04:3hop m05:2hop m06:3hop m07:3hop m11:3hop m12:3hop m13:1hop m14:3hop
+S140s20_40 v2.0: standing 5/16 on box 5 | jumps {2: 3, 3: 2} | gap - | falls m02:3hop m03:3hop m04:3hop m07:3hop m08:2hop m09:2hop m10:3hop m11:2hop m12:2hop m13:2hop m15:2hop
+S140s20_60 v1.5: standing 9/16 on box 9 | jumps {2: 6, 3: 3} | gap - | falls m02:2hop m03:4hop m04:2hop m05:2hop m06:2hop m12:2hop m15:2hop
+S140s20_60 v2.0: standing 4/16 on box 4 | jumps {2: 2, 3: 2} | gap - | falls m00:3hop m01:2hop m02:2hop m03:4hop m04:2hop m05:2hop m06:2hop m07:2hop m08:2hop m09:3hop m10:2hop m11:3hop
+HYas20 -> S140s20 v1.5: 52/64 -> 26/64  改善 2 悪化 28 z -4.75  悪化 20:m04 20:m06 20:m08 20:m09 20:m11 20:m12 20:m14 20:m15 30:m01 30:m02 30:m04 30:m07 30:m08 30:m11 30:m15 40:m00 40:m01 40:m02 40:m04 40:m05 40:m06 40:m07 40:m12 60:m03 60:m04 60:m05 60:m06 60:m15
+HYas20 -> S140s20 v2.0: 54/64 -> 16/64  改善 4 悪化 42 z -5.60  悪化 20:m00 20:m01 20:m02 20:m03 20:m04 20:m05 20:m06 20:m07 20:m09 20:m10 20:m11 20:m12 20:m13 20:m15 30:m00 30:m02 30:m03 30:m04 30:m06 30:m07 30:m08 30:m10 30:m15 40:m02 40:m03 40:m04 40:m07 40:m08 40:m09 40:m11 40:m12 40:m13 40:m15 60:m00 60:m02 60:m04 60:m05 60:m06 60:m08 60:m09 60:m10 60:m11
+S140h20_20 v1.5: standing 3/8 on box 3 | jumps {2: 3} | gap - | falls m00:2hop m03:2hop m04:2hop m06:2hop m07:2hop
+S140h20_20 v2.0: standing 0/8 on box 0 | jumps {} | gap - | falls m00:2hop m01:2hop m02:2hop m03:2hop m04:2hop m05:2hop m06:2hop m07:2hop
+S140h20_30 v1.5: standing 1/8 on box 1 | jumps {2: 1} | gap - | falls m00:2hop m01:3hop m02:3hop m03:3hop m04:3hop m06:2hop m07:3hop
+S140h20_30 v2.0: standing 5/8 on box 5 | jumps {2: 5} | gap - | falls m02:2hop m05:2hop m06:2hop
+S140h20_40 v1.5: standing 4/8 on box 4 | jumps {3: 3, 4: 1} | gap - | falls m00:3hop m02:3hop m04:4hop m07:3hop
+S140h20_40 v2.0: standing 0/8 on box 0 | jumps {} | gap - | falls m00:2hop m01:3hop m02:2hop m03:3hop m04:2hop m05:3hop m06:2hop m07:1hop
+S140h20_60 v1.5: standing 6/8 on box 6 | jumps {2: 5, 3: 1} | gap - | falls m02:4hop m05:3hop
+S140h20_60 v2.0: standing 0/8 on box 0 | jumps {} | gap - | falls m00:3hop m01:2hop m02:2hop m03:3hop m04:3hop m05:2hop m06:3hop m07:2hop
+HYah20 -> S140h20 v1.5: 27/32 -> 14/32  改善 0 悪化 13 z -3.61  悪化 20:m00 20:m03 20:m04 20:m06 20:m07 30:m00 30:m01 30:m02 30:m03 30:m06 40:m07 60:m02 60:m05
+HYah20 -> S140h20 v2.0: 25/32 -> 5/32  改善 2 悪化 22 z -4.08  悪化 20:m01 20:m02 20:m03 20:m04 20:m05 20:m06 30:m02 30:m06 40:m00 40:m01 40:m02 40:m03 40:m04 40:m05 40:m06 60:m00 60:m01 60:m02 60:m03 60:m04 60:m06 60:m07
+#### JB79_DONE
