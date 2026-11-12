@@ -270,6 +270,12 @@ fn main() {
     let jump_box_gap = std::env::var("JUMP_BOX_GAP").ok().map(|s| s.trim().parse::<f64>().unwrap());
     let jump_box_gap_tol = env_f64("JUMP_BOX_GAP_TOL", 0.03);
     let jump_box_s = env_f64("JUMP_BOX_S", 1.0);
+    // JUMP_BOX_S_TAB ("h:s,h:s,...", unset = off): JUMP_BOX_S read off the
+    // box height (JUMP_BOX's second value), piecewise-linear and clamped at
+    // the ends. Measured 2026-11-12 (jb79scr, HY on a 20 cm box, the 18
+    // that landed at the edge): 1.2 stood 4, 1.35 stood 9, 1.5 stood 0
+    // (the toe meets the box face).
+    let jump_box_s = tab("JUMP_BOX_S_TAB").map_or(jump_box_s, |t| interp(&t, jump_box.map_or(0.0, |b| b.1)));
     // JUMP_BOX_TUCK=d (m, 0 = off): FLIGHT_FEET_TUCK added on the jump onto
     // the box only (JUMP_BOX_GAP). Measured 2026-11-08: with the tuck on
     // every jump, the short backward hops that close the gap fell (5 cm box
@@ -614,6 +620,17 @@ fn main() {
     // one member then drifts backward off the box.
     let jump_box_clear = std::env::var("JUMP_BOX_CLEAR").ok().map(|s| s.trim().parse::<f64>().unwrap());
     let jump_box_clear_x = env_f64("JUMP_BOX_CLEAR_X", 0.03);
+    // JUMP_BOX_LAND_X_MIN=m (m, unset = off; needs JUMP_BOX): in flight on
+    // the jump onto the box, hold each foot's target (the ankle origin) at
+    // least m past the box's front face, once the CoM is coming down (from
+    // lift-off on, the feet swing forward low and hit the box face). Measured 2026-11-12 (HY, 20 cm
+    // box): the landings at the edge (ankle +0.00-0.06 past the face, 13 of
+    // 17 fell) are the weak take-offs (vx 0.46-0.49) and the small-h_y ones
+    // whose feet JUMP_BOX_CAPTURE_HY_TAB brought under the CoM. It does not
+    // help (jb79scr, 18 of them: 4 stood, 0.07 / 0.08 / 0.10: 5 / 4 / 5):
+    // the feet land further in but the CoM does not, 8-10 cm behind the
+    // ankles, and the rise falls back. The CoM's travel is short.
+    let jump_box_land_x_min = std::env::var("JUMP_BOX_LAND_X_MIN").ok().map(|s| s.trim().parse::<f64>().unwrap());
     let mut ground_dz = 0.0_f64;
     let mut land_sole0: Option<(f64, na::Vector2<f64>)> = None;
     // (landing start, each sole's last position, accumulated shift)
@@ -2042,6 +2059,9 @@ fn main() {
                     && pos.x + prof.sole_centre_x - sole_half_l - jump_box_clear_x < bx
                 {
                     p_tgt.z = p_tgt.z.max(bh + c + prof.sole_below_origin);
+                }
+                if box_jump_now && com_vel.z < 0.0 && let (Some(m), Some((bx, _, _))) = (jump_box_land_x_min, jump_box) {
+                    p_tgt.x = p_tgt.x.max(bx + m);
                 }
                 if flight_feet_flat {
                     // FLIGHT_FEET_FLAT=1: also hold the sole level (roll and
