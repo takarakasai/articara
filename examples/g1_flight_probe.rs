@@ -662,6 +662,14 @@ fn main() {
     // leave behind the CoM; landing there pitches the body forward.
     let flight_feet_capture = env_f64("FLIGHT_FEET_CAPTURE", 0.0);
     let flight_feet_capture_t = env_f64("FLIGHT_FEET_CAPTURE_T", 0.12).max(1e-3);
+    // JUMP_BOX_CAPTURE_TAB ("h:k,h:k,...", unset = off): FLIGHT_FEET_CAPTURE
+    // on the jump onto the box only, read off the box height (JUMP_BOX's
+    // second value), piecewise-linear and clamped at the ends. Measured
+    // 2026-11-12 (TK, 20 cm box): the box landing comes in with the ankles
+    // 4 cm ahead of the CoM, the legs 25 cm short of standing, and the
+    // members with a small lift-off pitch momentum (h_y <= 0.6) cannot
+    // carry the CoM over the feet in the rise and fall back (26 of 48).
+    let jump_box_capture = tab("JUMP_BOX_CAPTURE_TAB").map(|t| interp(&t, jump_box.map_or(0.0, |b| b.1)));
     // FLIGHT_FEET_WIDTH=w (m, 0 = off): in flight, also carry the soles'
     // lateral offsets from the CoM to +w/2 (left) and -w/2 (right),
     // smoothstep over FLIGHT_FEET_CAPTURE_T s from lift-off. Measured
@@ -1928,6 +1936,7 @@ fn main() {
             names.push("fz sym");
         }
         if flight && flight_feet && let Some(mut off) = feet_off {
+            let flight_feet_capture = if box_jump_now { jump_box_capture.unwrap_or(flight_feet_capture) } else { flight_feet_capture };
             if flight_feet_capture > 0.0 && let Some(t0f) = flight_t0 {
                 let h = (stand_z - (fz_stand[0].min(fz_stand[1]) - prof.sole_below_origin)).max(0.3);
                 let b = ((t - t0f) / flight_feet_capture_t).clamp(0.0, 1.0);
