@@ -1,0 +1,64 @@
+DF50_10 JUMP_V=1.5: 着地 0/16  飛ばず 0  離地速度中央値 1.198  |h_y|中央値 0.25  両足同時着地 0/16
+DF50_10 JUMP_V=2.0: 着地 1/16  飛ばず 0  離地速度中央値 1.254  |h_y|中央値 0.47  両足同時着地 0/16
+DF40_10 JUMP_V=1.5: 着地 1/16  飛ばず 0  離地速度中央値 1.211  |h_y|中央値 0.28  両足同時着地 0/16
+DF40_10 JUMP_V=2.0: 着地 0/16  飛ばず 0  離地速度中央値 1.264  |h_y|中央値 0.45  両足同時着地 0/16
+DF40_05 JUMP_V=1.5: 着地 0/16  飛ばず 0  離地速度中央値 1.178  |h_y|中央値 0.29  両足同時着地 0/16
+DF40_05 JUMP_V=2.0: 着地 4/16  飛ばず 0  離地速度中央値 1.205  |h_y|中央値 0.48  両足同時着地 0/16
+DF50_02 JUMP_V=1.5: 着地 2/16  飛ばず 0  離地速度中央値 1.138  |h_y|中央値 0.29  両足同時着地 1/16
+DF50_02 JUMP_V=2.0: 着地 2/16  飛ばず 0  離地速度中央値 1.224  |h_y|中央値 0.44  両足同時着地 0/16
+DF50_05 JUMP_V=1.5: 着地 0/16  飛ばず 0  離地速度中央値 1.125  |h_y|中央値 0.30  両足同時着地 3/16
+DF50_05 JUMP_V=2.0: 着地 5/16  飛ばず 0  離地速度中央値 1.300  |h_y|中央値 0.44  両足同時着地 0/16
+DF40_02 JUMP_V=1.5: 着地 3/16  飛ばず 0  離地速度中央値 1.201  |h_y|中央値 0.30  両足同時着地 2/16
+DF40_02 JUMP_V=2.0: 着地 5/16  飛ばず 0  離地速度中央値 1.242  |h_y|中央値 0.39  両足同時着地 0/16
+DF30_05 JUMP_V=1.5: 着地 4/16  飛ばず 0  離地速度中央値 1.175  |h_y|中央値 0.28  両足同時着地 1/16
+DF30_05 JUMP_V=2.0: 着地 6/16  飛ばず 0  離地速度中央値 1.276  |h_y|中央値 0.45  両足同時着地 0/16
+DF30_02 JUMP_V=1.5: 着地 4/16  飛ばず 0  離地速度中央値 1.065  |h_y|中央値 0.30  両足同時着地 4/16
+DF30_02 JUMP_V=2.0: 着地 9/16  飛ばず 0  離地速度中央値 1.300  |h_y|中央値 0.44  両足同時着地 0/16
+DF30_10 JUMP_V=1.5: 着地 3/16  飛ばず 0  離地速度中央値 1.194  |h_y|中央値 0.28  両足同時着地 0/16
+DF30_10 JUMP_V=2.0: 着地 9/16  飛ばず 0  離地速度中央値 1.334  |h_y|中央値 0.45  両足同時着地 0/16
+DD30_02  v1.5: standing 11/16 | 1st td on box 0 | heel-edge med +0.126 [+0.100,+0.156] <0: 0 | td vz -2.750 | err med +0.021 | jumps {1: 6, 2: 5} | falls m00:6.4 m03:2.4 m07:1.3 m12:2.6 m14:1.5
+DD30_02  v2.0: standing 13/16 | 1st td on box 1 | heel-edge med +0.143 [-0.046,+0.201] <0: 1 | td vz -2.721 | err med +0.004 | jumps {1: 4, 2: 9} | falls m02:0.4 m08:5.2 m14:4.9
+DF30_02  v1.5: standing  4/16 | 1st td on box 10 | heel-edge med -0.032 [-0.127,+0.114] <0: 10 | td vz -1.048 | err med +0.022 | jumps {1: 4} | falls m01:1.6 m02:0.4 m03:0.6 m04:0.4 m05:0.6 m06:1.2 m07:0.7 m09:0.7 m10:0.4 m11:0.4 m12:0.4 m14:1.0
+DF30_02  v2.0: standing  9/16 | 1st td on box 6 | heel-edge med +0.075 [-0.050,+0.169] <0: 6 | td vz -2.745 | err med +0.009 | jumps {1: 8, 2: 1} | falls m02:0.3 m04:0.4 m05:0.4 m08:4.7 m10:4.4 m12:0.8 m15:0.4
+  総合        24 ->  13  改善  2 悪化 13  z=-2.84
+DD40_02  v1.5: standing  8/16 | 1st td on box 1 | heel-edge med +0.145 [-0.002,+0.174] <0: 1 | td vz -3.080 | err med -0.001 | jumps {1: 2, 2: 5, 3: 1} | falls m00:2.1 m01:2.0 m02:2.0 m04:1.6 m07:1.9 m12:2.1 m13:2.6 m14:1.3
+DD40_02  v2.0: standing 15/16 | 1st td on box 1 | heel-edge med +0.157 [-0.046,+0.188] <0: 1 | td vz -3.052 | err med -0.001 | jumps {1: 2, 2: 13} | falls m02:0.5
+DF40_02  v1.5: standing  3/16 | 1st td on box 8 | heel-edge med +0.045 [-0.133,+0.127] <0: 7 | td vz -2.173 | err med +0.023 | jumps {1: 3} | falls m00:2.2 m01:2.0 m02:0.4 m03:1.6 m05:0.7 m06:2.2 m07:0.8 m09:0.4 m10:0.4 m11:0.5 m13:2.6 m14:0.9 m15:0.4
+DF40_02  v2.0: standing  5/16 | 1st td on box 9 | heel-edge med +0.003 [-0.066,+0.176] <0: 7 | td vz -1.319 | err med +0.001 | jumps {1: 4, 2: 1} | falls m00:4.7 m01:0.4 m02:1.6 m04:2.1 m05:0.4 m06:4.0 m07:2.2 m10:0.6 m11:1.8 m12:0.4 m14:1.8
+  総合        23 ->   8  改善  2 悪化 17  z=-3.44
+DD50_02  v1.5: standing  7/16 | 1st td on box 1 | heel-edge med +0.154 [-0.008,+0.182] <0: 1 | td vz -3.374 | err med -0.001 | jumps {2: 5, 3: 2} | falls m01:1.8 m02:2.1 m03:2.4 m04:1.6 m06:2.1 m07:2.3 m12:1.9 m13:10.0 m15:2.1
+DD50_02  v2.0: standing 14/16 | 1st td on box 1 | heel-edge med +0.170 [-0.046,+0.201] <0: 1 | td vz -3.346 | err med -0.001 | jumps {1: 2, 2: 12} | falls m02:0.5 m09:5.0
+DF50_02  v1.5: standing  2/16 | 1st td on box 9 | heel-edge med -0.024 [-0.197,+0.141] <0: 9 | td vz -1.145 | err med +0.030 | jumps {1: 2} | falls m00:1.7 m01:1.0 m02:0.8 m03:0.4 m04:0.4 m05:0.4 m06:0.6 m07:1.5 m09:0.4 m10:0.4 m11:1.8 m12:2.3 m14:2.0 m15:2.1
+DF50_02  v2.0: standing  2/16 | 1st td on box 13 | heel-edge med -0.015 [-0.077,+0.187] <0: 13 | td vz -1.240 | err med +0.021 | jumps {1: 2} | falls m01:1.6 m02:1.6 m03:0.4 m05:0.4 m06:0.4 m07:1.6 m08:2.6 m09:0.4 m10:0.5 m11:1.7 m12:0.4 m13:1.5 m14:1.8 m15:0.4
+  総合        21 ->   4  改善  1 悪化 18  z=-3.90
+DD30_05  v1.5: standing 15/16 | 1st td on box 0 | heel-edge med +0.147 [+0.122,+0.191] <0: 0 | td vz -2.749 | err med +0.001 | jumps {1: 1, 2: 12, 3: 1, 4: 1} | falls m01:2.8
+DD30_05  v2.0: standing 12/16 | 1st td on box 2 | heel-edge med +0.151 [-0.014,+0.233] <0: 2 | td vz -2.787 | err med +0.001 | jumps {1: 1, 2: 11} | falls m02:5.2 m06:5.5 m09:4.7 m11:2.9
+DF30_05  v1.5: standing  4/16 | 1st td on box 11 | heel-edge med -0.022 [-0.158,+0.088] <0: 10 | td vz -1.264 | err med +0.004 | jumps {1: 4} | falls m01:0.3 m02:3.8 m03:0.4 m04:0.4 m05:1.0 m06:4.5 m07:1.3 m09:0.4 m10:0.4 m11:0.4 m12:0.3 m14:1.2
+DF30_05  v2.0: standing  6/16 | 1st td on box 9 | heel-edge med -0.000 [-0.078,+0.155] <0: 8 | td vz -1.361 | err med +0.003 | jumps {1: 6} | falls m00:2.4 m02:0.3 m03:0.4 m05:0.4 m07:2.1 m08:4.7 m11:0.4 m12:0.4 m13:4.7 m15:2.9
+  総合        27 ->  10  改善  2 悪化 19  z=-3.71
+DD40_05  v1.5: standing 13/16 | 1st td on box 0 | heel-edge med +0.167 [+0.140,+0.215] <0: 0 | td vz -3.084 | err med -0.003 | jumps {2: 13} | falls m00:2.3 m01:2.2 m07:2.0
+DD40_05  v2.0: standing 11/16 | 1st td on box 2 | heel-edge med +0.168 [-0.049,+0.254] <0: 2 | td vz -3.132 | err med -0.004 | jumps {2: 11} | falls m02:0.4 m03:4.9 m09:4.7 m11:3.5 m13:4.7
+DF40_05  v1.5: standing  0/16 | 1st td on box 14 | heel-edge med -0.033 [-0.226,+0.103] <0: 12 | td vz -1.247 | err med - | jumps {} | falls m00:2.2 m01:0.4 m02:0.4 m03:0.8 m04:0.4 m05:0.4 m06:1.8 m07:1.5 m08:1.8 m09:0.4 m10:0.9 m11:0.5 m12:0.4 m13:1.7 m14:1.3 m15:2.2
+DF40_05  v2.0: standing  4/16 | 1st td on box 11 | heel-edge med -0.022 [-0.095,+0.161] <0: 11 | td vz -1.260 | err med +0.007 | jumps {1: 4} | falls m01:0.9 m02:1.0 m03:1.7 m04:0.4 m06:2.0 m07:0.4 m08:4.8 m10:0.4 m11:0.4 m12:0.7 m13:2.1 m15:0.4
+  総合        24 ->   4  改善  1 悪化 21  z=-4.26
+DD50_05  v1.5: standing 11/16 | 1st td on box 0 | heel-edge med +0.184 [+0.157,+0.233] <0: 0 | td vz -3.349 | err med +0.009 | jumps {2: 11} | falls m00:1.9 m01:2.0 m02:2.3 m07:2.2 m14:2.2
+DD50_05  v2.0: standing 13/16 | 1st td on box 2 | heel-edge med +0.184 [-0.014,+0.273] <0: 2 | td vz -3.424 | err med -0.005 | jumps {2: 13} | falls m02:1.7 m11:5.5 m13:4.8
+DF50_05  v1.5: standing  0/16 | 1st td on box 14 | heel-edge med -0.050 [-0.157,+0.116] <0: 13 | td vz -1.154 | err med - | jumps {} | falls m00:1.8 m01:0.4 m02:0.8 m03:1.1 m04:0.4 m05:0.6 m06:2.0 m07:0.8 m08:1.6 m09:0.4 m10:0.9 m11:0.4 m12:0.4 m13:1.8 m14:1.5 m15:2.2
+DF50_05  v2.0: standing  5/16 | 1st td on box 10 | heel-edge med -0.017 [-0.094,+0.171] <0: 10 | td vz -1.334 | err med +0.010 | jumps {1: 4, 2: 1} | falls m00:2.2 m01:1.5 m02:1.2 m04:0.4 m05:0.4 m06:1.3 m07:2.7 m10:0.4 m12:0.4 m13:2.0 m15:0.4
+  総合        24 ->   5  改善  1 悪化 20  z=-4.15
+DD30_10  v1.5: standing 15/16 | 1st td on box 0 | heel-edge med +0.166 [+0.120,+0.228] <0: 0 | td vz -2.720 | err med -0.008 | jumps {1: 3, 2: 12} | falls m00:5.1
+DD30_10  v2.0: standing 14/16 | 1st td on box 0 | heel-edge med +0.180 [+0.102,+0.217] <0: 0 | td vz -2.797 | err med -0.006 | jumps {1: 4, 2: 10} | falls m03:5.5 m12:4.9
+DF30_10  v1.5: standing  3/16 | 1st td on box 13 | heel-edge med -0.010 [-0.189,+0.107] <0: 10 | td vz -1.301 | err med +0.028 | jumps {1: 3} | falls m00:1.2 m01:0.3 m02:2.7 m03:1.9 m04:0.8 m05:1.8 m06:2.2 m07:0.4 m08:1.5 m12:0.4 m13:2.7 m14:0.5 m15:0.4
+DF30_10  v2.0: standing  9/16 | 1st td on box 7 | heel-edge med +0.081 [-0.050,+0.149] <0: 6 | td vz -2.729 | err med +0.003 | jumps {1: 7, 2: 2} | falls m02:0.7 m03:2.9 m04:0.4 m05:2.3 m06:4.1 m07:3.4 m10:3.4
+  総合        29 ->  12  改善  1 悪化 18  z=-3.90
+DD40_10  v1.5: standing 16/16 | 1st td on box 0 | heel-edge med +0.186 [+0.139,+0.255] <0: 0 | td vz -3.048 | err med -0.002 | jumps {2: 15, 3: 1} | falls 
+DD40_10  v2.0: standing 13/16 | 1st td on box 0 | heel-edge med +0.200 [+0.112,+0.239] <0: 0 | td vz -3.107 | err med -0.006 | jumps {1: 1, 2: 12} | falls m00:4.8 m09:4.7 m11:6.0
+DF40_10  v1.5: standing  1/16 | 1st td on box 16 | heel-edge med -0.040 [-0.271,-0.014] <0: 16 | td vz -1.289 | err med +0.010 | jumps {2: 1} | falls m00:0.4 m01:0.4 m02:0.4 m03:0.4 m04:1.8 m05:0.4 m06:0.4 m07:0.6 m08:4.7 m09:0.4 m10:1.3 m11:0.4 m13:0.4 m14:0.6 m15:0.5
+DF40_10  v2.0: standing  0/16 | 1st td on box 15 | heel-edge med -0.021 [-0.112,+0.150] <0: 14 | td vz -1.314 | err med - | jumps {} | falls m00:0.4 m01:2.0 m02:0.4 m03:1.9 m04:0.4 m05:1.8 m06:1.9 m07:0.4 m08:4.9 m09:0.5 m10:1.9 m11:0.5 m12:1.9 m13:0.4 m14:1.7 m15:0.4
+  総合        29 ->   1  改善  0 悪化 28  z=-5.29
+DD50_10  v1.5: standing 15/16 | 1st td on box 0 | heel-edge med +0.206 [+0.156,+0.279] <0: 0 | td vz -3.373 | err med +0.003 | jumps {2: 14, 3: 1} | falls m00:2.3
+DD50_10  v2.0: standing 12/16 | 1st td on box 0 | heel-edge med +0.219 [+0.138,+0.255] <0: 0 | td vz -3.421 | err med -0.005 | jumps {2: 12} | falls m03:4.8 m08:4.7 m09:1.2 m13:4.8
+DF50_10  v1.5: standing  0/16 | 1st td on box 16 | heel-edge med -0.050 [-0.197,-0.021] <0: 16 | td vz -1.292 | err med - | jumps {} | falls m00:0.4 m01:0.5 m02:0.4 m03:0.4 m04:0.4 m05:0.4 m06:0.4 m07:0.4 m08:2.0 m09:0.4 m10:0.9 m11:0.4 m12:5.7 m13:1.5 m14:0.4 m15:1.0
+DF50_10  v2.0: standing  1/16 | 1st td on box 15 | heel-edge med -0.032 [-0.111,+0.155] <0: 15 | td vz -1.308 | err med +0.005 | jumps {2: 1} | falls m00:0.4 m01:0.4 m02:0.8 m03:0.4 m04:0.4 m05:0.4 m06:0.4 m07:0.4 m09:0.4 m10:0.4 m11:2.0 m12:0.4 m13:0.4 m14:1.8 m15:0.4
+  総合        27 ->   1  改善  1 悪化 27  z=-4.91
+#### JB83_DONE
