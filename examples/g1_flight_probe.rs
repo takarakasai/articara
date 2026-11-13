@@ -256,7 +256,19 @@ fn main() {
         let ss: Vec<(f64, f64)> = tab.iter().map(|(v, pts)| (*v, inv_pw(pts, dx))).collect();
         interp(&ss, jump_v)
     };
-    let mut fwd_s = jump_fwd_target.map_or(1.0, fwd_s_for);
+    // JUMP_FWD_DROP_TAB ("h:dx,h:dx,...", unset = off): standing on the box
+    // at the start (JUMP_BOX's front face behind the feet), the first jump
+    // aims dx m (read off the box height h, piecewise-linear and clamped)
+    // short of JUMP_FWD_TARGET -- the drop lengthens the flight past what
+    // JUMP_FWD_TAB, measured on the flat, knows. Measured 2026-11-13 (jb82):
+    // off a 10/20/30/40/50 cm box the first jump overshoots by a median
+    // +0.03/+0.05/+0.07/+0.09/+0.10 m, and the backward correction hop that
+    // follows is FY's weak point (28 of the 59 falls at 30-50 cm).
+    let jump_fwd_drop = tab("JUMP_FWD_DROP_TAB").zip(jump_box.filter(|b| b.0 < -0.2)).map_or(0.0, |(t, b)| interp(&t, b.1));
+    let mut fwd_s = jump_fwd_target.map_or(1.0, |dx| fwd_s_for(dx - jump_fwd_drop));
+    if jump_fwd_drop != 0.0 {
+        println!("jump forward drop: first jump aims {jump_fwd_drop:.3} m short");
+    }
     let jump_fwd_tol = env_f64("JUMP_FWD_TOL", 0.05);
     let mut fwd_reached = false;
     // JUMP_BOX_GAP=g (m, unset = off; needs JUMP_BOX, JUMP_FWD_TAB and
