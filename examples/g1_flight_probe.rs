@@ -434,6 +434,17 @@ fn main() {
     // on a 20 cm box): of the 57 that landed past the edge and fell back in
     // the rise at KD 150, KD 200 stood 34 and 250 stood 40.
     let kd_trunk_land_box = tab("KD_TRUNK_LAND_BOX_TAB").map_or(kd_trunk_land_box, |t| interp(&t, jump_box.map_or(0.0, |b| b.1)));
+    // KP/KD_TRUNK_LAND_DROP: the trunk gains after a landing at least
+    // LAND_DROP_H m (default 0.05) below the surface the jump took off from
+    // (needs LAND_GROUND_Z; default = KP/KD_TRUNK_LAND). Measured 2026-11-13
+    // (jb80-81, jumping off a 30-40 cm box): the CoM sinks to 0.41-0.44 m
+    // and, rising, runs 5-8 cm behind the sole centre and on off the heels
+    // (34 of 128 stood); KP/KD_TRUNK_LAND 60/150 stood 111 of 128 but on
+    // every landing it also changes the flat hops.
+    let kp_trunk_land_drop = env_f64("KP_TRUNK_LAND_DROP", kp_trunk_land);
+    let kd_trunk_land_drop = env_f64("KD_TRUNK_LAND_DROP", kd_trunk_land);
+    let land_drop_h = env_f64("LAND_DROP_H", 0.05);
+    let mut drop_land = false;
     let mut diag_com_cmd: Option<(na::Vector3<f64>, na::Vector3<f64>)> = None; // (ref, a_cmd)
     // DIAG_PUSHX=1: from the push start to 30 ms after the push ends, every
     // 10 ms: the CoM x reference (position, velocity, acceleration) against
@@ -1307,7 +1318,9 @@ fn main() {
                 if land_ground_z && touchdown_t.is_none() {
                     let dz: Vec<f64> = (0..2).filter(|&k| in_contact[k]).map(|k| misarta::se3::translation(&data.oMi[feet[k]]).z - fz_stand0[k]).collect();
                     if !dz.is_empty() {
-                        ground_dz = dz.iter().sum::<f64>() / dz.len() as f64;
+                        let gz = dz.iter().sum::<f64>() / dz.len() as f64;
+                        drop_land = gz - ground_dz < -land_drop_h;
+                        ground_dz = gz;
                         stand_z = stand_z0 + ground_dz;
                         fz_stand = fz_stand0.map(|z| z + ground_dz);
                     }
@@ -1792,6 +1805,8 @@ fn main() {
             let hard_land = touchdown_t.is_some() && (trunk_land_vz <= 0.0 || td_vz < -trunk_land_vz);
             let (kp_t, kd_t) = if hard_land && box_jump_now {
                 (kp_trunk_land_box, kd_trunk_land_box)
+            } else if hard_land && drop_land {
+                (kp_trunk_land_drop, kd_trunk_land_drop)
             } else if hard_land {
                 (kp_trunk_land, kd_trunk_land)
             } else {
