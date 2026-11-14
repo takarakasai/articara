@@ -555,6 +555,16 @@ fn main() {
     let land_t = env_f64("LAND_T", 0.25).max(0.02);
     let land_hold = env_f64("LAND_HOLD", 0.3).max(0.0);
     let land_rise = env_f64("LAND_RISE", 1.0).max(0.05);
+    // LAND_HOLD_DROP / LAND_RISE_DROP (s, unset = LAND_HOLD / LAND_RISE): the
+    // same, on a landing at least LAND_DROP_H below the surface the jump left
+    // (as KP/KD_TRUNK_LAND_DROP). Measured 2026-11-14 (jb88, DD off 30-50 cm,
+    // 1.5, toe 2 cm from the edge): the members that fall back keep the CoM
+    // over the soles through the sink (-0.03 m at 0.6 s) and lose it in the
+    // rise (0.41 -> 0.60 m by 1.1 s): the trunk pitches back +0.10 -> -0.13
+    // rad and the CoM goes to -0.095 (standing ones -0.046); moving the
+    // landing reference forward (LAND_REF_DROP_DX 0.03) leaves it at -0.095.
+    let land_hold_drop = env_f64("LAND_HOLD_DROP", land_hold).max(0.0);
+    let land_rise_drop = env_f64("LAND_RISE_DROP", land_rise).max(0.05);
     // LAND_STEP=1: after touchdown, if the DCM (c + v/omega) leaves the
     // feet's fore-aft support (within LAND_STEP_MARGIN of an edge), take one
     // capture step: the foot farther from the DCM's lateral position swings
@@ -1584,10 +1594,11 @@ fn main() {
                         cd[i] = vv;
                         cdd[i] = aa;
                     }
-                    let s_rise = s - land_t - land_hold;
+                    let (lh, lr) = if drop_land { (land_hold_drop, land_rise_drop) } else { (land_hold, land_rise) };
+                    let s_rise = s - land_t - lh;
                     if s_rise > 0.0 {
                         let z_low = c0.z + 0.5 * v0.z * land_t;
-                        let (p, vv, aa) = quintic(z_low, 0.0, stand_z, land_rise, s_rise);
+                        let (p, vv, aa) = quintic(z_low, 0.0, stand_z, lr, s_rise);
                         c.z = p;
                         cd.z = vv;
                         cdd.z = aa;
