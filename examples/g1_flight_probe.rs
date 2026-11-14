@@ -455,6 +455,12 @@ fn main() {
     // every landing it also changes the flat hops.
     let kp_trunk_land_drop = env_f64("KP_TRUNK_LAND_DROP", kp_trunk_land);
     let kd_trunk_land_drop = env_f64("KD_TRUNK_LAND_DROP", kd_trunk_land);
+    // KP/KD_TRUNK_LAND_DROP_ROLL: the roll gains alone after such a landing
+    // (default = KP/KD_TRUNK_LAND_DROP; needs TRUNK_RP_YAWED). Measured
+    // 2026-11-14 (jb92): at 60/150 the landing roll of 0.2 rad decays over
+    // ~2 s, the CoM rests over one foot, and a quick rise unloads the other.
+    let kp_trunk_land_drop_roll = env_f64("KP_TRUNK_LAND_DROP_ROLL", kp_trunk_land_drop);
+    let kd_trunk_land_drop_roll = env_f64("KD_TRUNK_LAND_DROP_ROLL", kd_trunk_land_drop);
     let land_drop_h = env_f64("LAND_DROP_H", 0.05);
     let mut drop_land = false;
     let mut diag_com_cmd: Option<(na::Vector3<f64>, na::Vector3<f64>)> = None; // (ref, a_cmd)
@@ -1878,7 +1884,15 @@ fn main() {
             } else {
                 (kp_trunk, kd_trunk)
             };
-            let rp_ref = if trunk_rp_yawed {
+            let drop_roll = hard_land && !box_jump_now && drop_land && (kp_trunk_land_drop_roll != kp_t || kd_trunk_land_drop_roll != kd_t);
+            let rp_ref = if trunk_rp_yawed && drop_roll {
+                // roll and pitch about the heading, each with its own gains
+                let (sy, cy) = yaw_now.sin_cos();
+                let (wr, wp) = (cy * st.v_ang_w[0] + sy * st.v_ang_w[1], -sy * st.v_ang_w[0] + cy * st.v_ang_w[1]);
+                let er = -kp_trunk_land_drop_roll * roll - kd_trunk_land_drop_roll * wr;
+                let ep = -kp_t * pitch - kd_t * wp;
+                [cy * er - sy * ep, sy * er + cy * ep]
+            } else if trunk_rp_yawed {
                 let (sy, cy) = yaw_now.sin_cos();
                 let (er, ep) = (-kp_t * roll, -kp_t * pitch);
                 [cy * er - sy * ep - kd_t * st.v_ang_w[0], sy * er + cy * ep - kd_t * st.v_ang_w[1]]
