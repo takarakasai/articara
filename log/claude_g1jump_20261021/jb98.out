@@ -1,0 +1,25 @@
+jb98.sh: line 25: q: command not found
+jb98.sh: line 25: q: command not found
+jb98.sh: line 25: q: command not found
+jb98.sh: line 25: q: command not found
+jb98.sh: line 25: q: command not found
+jb98.sh: line 25: q: command not found
+jb98.sh: line 25: q: command not found
+jb98.sh: line 25: q: command not found
+jb98.sh: line 25: q: command not found
+jb98.sh: line 25: q: command not found
+jb98.sh: line 25: q: command not found
+jb98.sh: line 25: q: command not found
+BV15h10_10 JUMP_V=2.0: 着地 6/8  飛ばず 0  離地速度中央値 1.331  |h_y|中央値 0.53  両足同時着地 0/8
+BV15h20_05 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.336  |h_y|中央値 0.47  両足同時着地 0/8
+BV15h20_02 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.365  |h_y|中央値 0.38  両足同時着地 0/8
+BV15h10_02 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.365  |h_y|中央値 0.38  両足同時着地 0/8
+BV15h10_05 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.321  |h_y|中央値 0.44  両足同時着地 0/8
+BV15h20_10 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.327  |h_y|中央値 0.51  両足同時着地 0/8
+BV15_10_05 JUMP_V=2.0: 着地 14/16  飛ばず 0  離地速度中央値 1.356  |h_y|中央値 0.51  両足同時着地 0/16
+BV15_20_05 JUMP_V=2.0: 着地 14/16  飛ばず 0  離地速度中央値 1.364  |h_y|中央値 0.51  両足同時着地 0/16
+BV15_20_02 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.226  |h_y|中央値 0.45  両足同時着地 0/16
+BV15_10_02 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.226  |h_y|中央値 0.45  両足同時着地 0/16
+BV15_10_10 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.353  |h_y|中央値 0.55  両足同時着地 0/16
+BV15_20_10 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.351  |h_y|中央値 0.51  両足同時着地 0/16
+#### JB98_DONE

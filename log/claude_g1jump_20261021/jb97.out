@@ -1,0 +1,75 @@
+jb97.sh: line 25: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 26: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 26: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 26: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 26: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 26: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 26: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 26: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 26: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 25: q: command not found
+jb97.sh: line 26: q: command not found
+jb97.sh: line 29: q: command not found
+jb97.sh: line 29: q: command not found
+jb97.sh: line 29: q: command not found
+jb97.sh: line 29: q: command not found
+jb97.sh: line 29: q: command not found
+jb97.sh: line 29: q: command not found
+jb97.sh: line 29: q: command not found
+jb97.sh: line 29: q: command not found
+jb97.sh: line 29: q: command not found
+jb97.sh: line 29: q: command not found
+BV15h40_05 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.338  |h_y|中央値 0.47  両足同時着地 0/8
+BV15p40_02 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.298  |h_y|中央値 0.42  両足同時着地 0/8
+BV15h30_05 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.335  |h_y|中央値 0.47  両足同時着地 0/8
+BV15p30_05 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.408  |h_y|中央値 0.44  両足同時着地 0/8
+BV15h50_05 JUMP_V=2.0: 着地 6/8  飛ばず 0  離地速度中央値 1.338  |h_y|中央値 0.47  両足同時着地 0/8
+BV15p50_02 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.385  |h_y|中央値 0.36  両足同時着地 0/8
+BV15p30_10 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.399  |h_y|中央値 0.49  両足同時着地 0/8
+BV15p40_05 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.408  |h_y|中央値 0.44  両足同時着地 0/8
+BV15h30_02 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.365  |h_y|中央値 0.40  両足同時着地 0/8
+BV15h50_02 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.365  |h_y|中央値 0.38  両足同時着地 0/8
+BV15p30_02 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.305  |h_y|中央値 0.42  両足同時着地 0/8
+BV15p50_05 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.465  |h_y|中央値 0.42  両足同時着地 0/8
+BV15h40_02 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.365  |h_y|中央値 0.43  両足同時着地 0/8
+BV15p50_10 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.373  |h_y|中央値 0.46  両足同時着地 0/8
+BV15p40_10 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.371  |h_y|中央値 0.55  両足同時着地 0/8
+BV15h30_10 JUMP_V=2.0: 着地 7/8  飛ばず 0  離地速度中央値 1.332  |h_y|中央値 0.53  両足同時着地 0/8
+BV15h40_10 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.260  |h_y|中央値 0.50  両足同時着地 0/8
+BV15h50_10 JUMP_V=2.0: 着地 8/8  飛ばず 0  離地速度中央値 1.328  |h_y|中央値 0.53  両足同時着地 0/8
+BV15_30_05 JUMP_V=2.0: 着地 14/16  飛ばず 0  離地速度中央値 1.355  |h_y|中央値 0.51  両足同時着地 0/16
+BV15_30_02 JUMP_V=2.0: 着地 14/16  飛ばず 0  離地速度中央値 1.226  |h_y|中央値 0.43  両足同時着地 0/16
+BV15_40_02 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.226  |h_y|中央値 0.45  両足同時着地 0/16
+BV15_50_05 JUMP_V=2.0: 着地 14/16  飛ばず 0  離地速度中央値 1.364  |h_y|中央値 0.51  両足同時着地 0/16
+BV15_40_05 JUMP_V=2.0: 着地 14/16  飛ばず 0  離地速度中央値 1.341  |h_y|中央値 0.51  両足同時着地 0/16
+BVZ50 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.52  両足同時着地 0/16
+BV15_30_10 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.353  |h_y|中央値 0.55  両足同時着地 0/16
+BVZ100 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.52  両足同時着地 0/16
+BVY80 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+BV15_40_10 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.351  |h_y|中央値 0.49  両足同時着地 0/16
+BVZ20 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.218  |h_y|中央値 0.45  両足同時着地 0/16
+BVY20 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.173  |h_y|中央値 0.46  両足同時着地 0/16
+BVY100 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+BV15_50_10 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.351  |h_y|中央値 0.55  両足同時着地 0/16
+BVZm30 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 0.755  |h_y|中央値 0.48  両足同時着地 6/16
+BV15_50_02 JUMP_V=2.0: 着地 15/16  飛ばず 0  離地速度中央値 1.200  |h_y|中央値 0.45  両足同時着地 0/16
+BVZ80 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.325  |h_y|中央値 0.52  両足同時着地 0/16
+BVYm30 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 0.763  |h_y|中央値 0.49  両足同時着地 3/16
+BVY50 JUMP_V=2.0: 着地 16/16  飛ばず 0  離地速度中央値 1.354  |h_y|中央値 0.48  両足同時着地 0/16
+#### JB97_DONE
