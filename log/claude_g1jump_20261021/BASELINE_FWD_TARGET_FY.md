@@ -28,3 +28,4 @@
 - 動画: `g1_fwd_target.mp4`（`diagh/render10.sh`、git には入れない）。
 
 経緯は `doc/from_claude/20261021_g1_jump.md` §32。
+- 11-15 に FYB（`BASELINE_FWD_TARGET_FYB.md`、＋JUMP_FWD_BACK_V 1.5）に置き換え。

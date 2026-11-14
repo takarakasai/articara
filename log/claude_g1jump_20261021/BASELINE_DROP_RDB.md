@@ -29,3 +29,4 @@
   - 2.0・間合い 0.05 の 30 cm が 17／24 と低い。
 
 経緯は `doc/from_claude/20261021_g1_jump.md` §46。
+- 11-15 に BF6（`BASELINE_DROP_BF6.md`）に置き換え。
