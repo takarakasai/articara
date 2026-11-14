@@ -251,11 +251,12 @@ fn main() {
     // +0.32 m and 2.0 -0.13 / +0.10 / +0.35 m at s 0 / 0.5 / 1.
     let jump_fwd_target = std::env::var("JUMP_FWD_TARGET").ok().map(|s| s.trim().parse::<f64>().unwrap());
     let jump_fwd_tab = vtab("JUMP_FWD_TAB");
-    let fwd_s_for = |dx: f64| -> f64 {
+    let fwd_s_at = |dx: f64, v: f64| -> f64 {
         let tab = jump_fwd_tab.as_ref().expect("JUMP_FWD_TARGET needs JUMP_FWD_TAB");
-        let ss: Vec<(f64, f64)> = tab.iter().map(|(v, pts)| (*v, inv_pw(pts, dx))).collect();
-        interp(&ss, jump_v)
+        let ss: Vec<(f64, f64)> = tab.iter().map(|(tv, pts)| (*tv, inv_pw(pts, dx))).collect();
+        interp(&ss, v)
     };
+    let fwd_s_for = |dx: f64| -> f64 { fwd_s_at(dx, jump_v) };
     // JUMP_FWD_DROP_TAB ("h:dx,h:dx,...", unset = off): standing on the box
     // at the start (JUMP_BOX's front face behind the feet), the first jump
     // aims dx m (read off the box height h, piecewise-linear and clamped)
@@ -345,6 +346,25 @@ fn main() {
     // the take-off speed, forward speed and lean of the jump now (JUMP_V's
     // but for the jump onto the box)
     let (mut jv, mut jvx, mut jlean) = (jump_v, jump_vx, jump_lean);
+    // JUMP_FWD_BACK_V (m/s, unset = off; with JUMP_FWD_TARGET): a jump with
+    // the distance still to go behind the soles (rem < 0) takes off at this
+    // speed in place of JUMP_V; JUMP_VX_TAB, JUMP_LEAN_TAB, CROUCH_TAB and
+    // JUMP_FWD_TAB are read at it. Measured 2026-11-14 (RDB, 30-50 cm, the
+    // backward correction hop after the drop): 3 of 183 fall at 1.5 and 20
+    // of 178 at 2.0, those with lift-off vz 1.35 (standing 1.10) and h_y
+    // +0.17 (+0.45); on the flat FY's -0.3 m stands 14 / 12 of 16 at 2.0.
+    let jump_fwd_back = std::env::var("JUMP_FWD_BACK_V").ok().map(|s| {
+        let v = s.trim().parse::<f64>().unwrap();
+        let at = |name: &str, d: f64| tab(name).map_or(d, |t| interp(&t, v));
+        (v, at("CROUCH_TAB", crouch_base), at("JUMP_VX_TAB", jump_vx), at("JUMP_LEAN_TAB", jump_lean))
+    });
+    if let (Some(b), Some(dx)) = (jump_fwd_back, jump_fwd_target)
+        && dx - jump_fwd_drop < 0.0
+    {
+        (jv, crouch, jvx, jlean) = b;
+        fwd_s = fwd_s_at(dx - jump_fwd_drop, jv);
+        println!("jump forward back: JUMP_V {jv} CROUCH {crouch:.4}: scale {fwd_s:.4} -> JUMP_VX {:.3} JUMP_LEAN {:.4}", jvx * fwd_s, jlean * fwd_s);
+    }
     let mut box_jump_now = false;
     // (toe to box, scale, onto the box)
     let box_gap_s = move |toe_x: f64| -> (f64, f64, bool) {
@@ -493,7 +513,7 @@ fn main() {
     let jump_mpc_meas = flag("JUMP_MPC_MEAS", false);
     let diag_mpc = flag("DIAG_MPC", false);
     let mut push_cfg = PushPlanCfg {
-        vx_target: env_f64("JUMP_MPC_VX", jump_vx * fwd_s),
+        vx_target: env_f64("JUMP_MPC_VX", jvx * fwd_s),
         w_v: env_f64("JUMP_MPC_WV", 1e3),
         w_h: env_f64("JUMP_MPC_WH", 1e2),
         w_h_run: env_f64("JUMP_MPC_WH_RUN", 1.0),
@@ -1220,6 +1240,13 @@ fn main() {
             if rem.abs() < jump_fwd_tol {
                 fwd_reached = true;
                 println!("  [fwd-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: no more jumps");
+            } else if let Some(b) = jump_fwd_back {
+                (jv, crouch, jvx, jlean) = if rem < 0.0 { b } else { (jump_v, crouch_base, jump_vx, jump_lean) };
+                fwd_s = fwd_s_at(rem, jv);
+                if !jump_mpc_vx_set {
+                    push_cfg.vx_target = jvx * fwd_s;
+                }
+                println!("  [fwd-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: scale {fwd_s:.4} at JUMP_V {jv}");
             } else {
                 fwd_s = fwd_s_for(rem);
                 if !jump_mpc_vx_set {
