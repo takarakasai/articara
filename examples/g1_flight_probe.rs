@@ -578,6 +578,15 @@ fn main() {
     // 131 / 130 / 128 off 10 / 20 / 30 / 40 / 50 cm against 135 / 134 / 131
     // / 123 / 114.
     let land_rise_drop_h = env_f64("LAND_RISE_DROP_H", land_drop_h);
+    // LAND_RISE_DROP_DECEL (s, unset = off): on those landings the rise
+    // speeds up over LAND_RISE_DROP / 2 as before but slows down over this
+    // long (the two halves of rest-to-rest quintics, joined at the top speed).
+    // Measured 2026-11-14 (jb92-93): with RISE 0.7 a foot unloads and lifts
+    // 0.8-1.0 s after touchdown on 272 of 363 landings (DD 9), as the rise
+    // brakes, and is set down wide (>0.28 m on 110) or turned; the hop from
+    // there falls. Putting the roll gains back (KP/KD_TRUNK_LAND_DROP_ROLL)
+    // takes the roll out but not the lift.
+    let land_rise_drop_decel = std::env::var("LAND_RISE_DROP_DECEL").ok().map(|s| s.trim().parse::<f64>().unwrap().max(0.05));
     let mut drop_dz = 0.0_f64; // how far below the take-off surface the last first touchdown was
     // LAND_STEP=1: after touchdown, if the DCM (c + v/omega) leaves the
     // feet's fore-aft support (within LAND_STEP_MARGIN of an edge), take one
@@ -1609,11 +1618,23 @@ fn main() {
                         cd[i] = vv;
                         cdd[i] = aa;
                     }
-                    let (lh, lr) = if drop_land && drop_dz > land_rise_drop_h { (land_hold_drop, land_rise_drop) } else { (land_hold, land_rise) };
+                    let deep = drop_land && drop_dz > land_rise_drop_h;
+                    let (lh, lr) = if deep { (land_hold_drop, land_rise_drop) } else { (land_hold, land_rise) };
                     let s_rise = s - land_t - lh;
                     if s_rise > 0.0 {
                         let z_low = c0.z + 0.5 * v0.z * land_t;
-                        let (p, vv, aa) = quintic(z_low, 0.0, stand_z, lr, s_rise);
+                        let (p, vv, aa) = if deep && let Some(td) = land_rise_drop_decel {
+                            let ta = 0.5 * lr;
+                            let d1 = (stand_z - z_low) * ta / (ta + td);
+                            let d2 = stand_z - z_low - d1;
+                            if s_rise < ta {
+                                quintic(z_low, 0.0, z_low + 2.0 * d1, 2.0 * ta, s_rise)
+                            } else {
+                                quintic(stand_z - 2.0 * d2, 0.0, stand_z, 2.0 * td, td + s_rise - ta)
+                            }
+                        } else {
+                            quintic(z_low, 0.0, stand_z, lr, s_rise)
+                        };
                         c.z = p;
                         cd.z = vv;
                         cdd.z = aa;
