@@ -729,6 +729,15 @@ fn main() {
     // k 0.55 / 0.25 fell 24/44 / 0/40 of the members with h_y <= 0.6 but
     // 5/20 / 10/13 of those with h_y >= 1.0; one k cannot serve both.
     let jump_box_capture_hy = tab("JUMP_BOX_CAPTURE_HY_TAB").filter(|_| jump_box.map_or(0.0, |b| b.1) >= env_f64("JUMP_BOX_CAPTURE_HY_H", 0.0));
+    // JUMP_DROP_CAPTURE_HY_TAB ("hy:k,hy:k,...", unset = off; needs a
+    // JUMP_BOX under the start): the same, on a jump from the box top (the
+    // surface the robot took off from is the box). Measured 2026-11-14
+    // (jb86, DD without the correction hop, 30-50 cm): the members that fall
+    // back after the first landing are the ones with a small h_y at
+    // lift-off (1.5, toe 2 cm from the edge: 23 fell, h_y median 0.205, all
+    // below 0.3; 38 stood, 0.272), not the slow ones (touchdown vx 0.50
+    // either way).
+    let jump_drop_capture_hy = tab("JUMP_DROP_CAPTURE_HY_TAB").filter(|_| jump_box.is_some_and(|b| b.0 < -0.2));
     // FLIGHT_FEET_WIDTH=w (m, 0 = off): in flight, also carry the soles'
     // lateral offsets from the CoM to +w/2 (left) and -w/2 (right),
     // smoothstep over FLIGHT_FEET_CAPTURE_T s from lift-off. Measured
@@ -2003,6 +2012,8 @@ fn main() {
         if flight && flight_feet && let Some(mut off) = feet_off {
             let flight_feet_capture = if box_jump_now {
                 jump_box_capture_hy.as_ref().map(|t| interp(t, lift_off_hy)).or(jump_box_capture).unwrap_or(flight_feet_capture)
+            } else if let Some(t) = jump_drop_capture_hy.as_ref() && ground_dz > -0.02 {
+                interp(t, lift_off_hy)
             } else {
                 flight_feet_capture
             };
