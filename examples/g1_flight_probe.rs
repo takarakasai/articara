@@ -654,6 +654,17 @@ fn main() {
     // the feet land further in but the CoM does not, 8-10 cm behind the
     // ankles, and the rise falls back. The CoM's travel is short.
     let jump_box_land_x_min = std::env::var("JUMP_BOX_LAND_X_MIN").ok().map(|s| s.trim().parse::<f64>().unwrap());
+    // JUMP_DROP_CLEAR=c and JUMP_DROP_LAND_X_MIN=m (m, unset = off; need a
+    // JUMP_BOX under the start): in flight from the box top (the surface
+    // the robot took off from is the box), a foot whose heel (sole centre -
+    // SOLE_HALF_L - JUMP_BOX_CLEAR_X) is not yet past the box's back edge
+    // (x + len) is held with its sole at least c above the box top, and
+    // each foot's target (the ankle origin) is held at least m past that
+    // edge. Measured 2026-11-13 (DD, 30-50 cm): cutting the first jump's
+    // target by its overshoot slows the take-off (vx 0.62 -> 0.49 at 1.5)
+    // and the trailing foot lands on the box top (228 -> 48 standing).
+    let jump_drop_clear = std::env::var("JUMP_DROP_CLEAR").ok().map(|s| s.trim().parse::<f64>().unwrap());
+    let jump_drop_land_x_min = std::env::var("JUMP_DROP_LAND_X_MIN").ok().map(|s| s.trim().parse::<f64>().unwrap());
     let mut ground_dz = 0.0_f64;
     let mut land_sole0: Option<(f64, na::Vector2<f64>)> = None;
     // (landing start, each sole's last position, accumulated shift)
@@ -2089,6 +2100,14 @@ fn main() {
                 }
                 if box_jump_now && com_vel.z < 0.0 && let (Some(m), Some((bx, _, _))) = (jump_box_land_x_min, jump_box) {
                     p_tgt.x = p_tgt.x.max(bx + m);
+                }
+                if let Some((bx, bh, bl)) = jump_box && bx < -0.2 && ground_dz > -0.02 {
+                    if let Some(c) = jump_drop_clear && pos.x + prof.sole_centre_x - sole_half_l - jump_box_clear_x < bx + bl {
+                        p_tgt.z = p_tgt.z.max(bh + c + prof.sole_below_origin);
+                    }
+                    if let Some(m) = jump_drop_land_x_min {
+                        p_tgt.x = p_tgt.x.max(bx + bl + m);
+                    }
                 }
                 if flight_feet_flat {
                     // FLIGHT_FEET_FLAT=1: also hold the sole level (roll and
