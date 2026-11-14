@@ -565,6 +565,14 @@ fn main() {
     // landing reference forward (LAND_REF_DROP_DX 0.03) leaves it at -0.095.
     let land_hold_drop = env_f64("LAND_HOLD_DROP", land_hold).max(0.0);
     let land_rise_drop = env_f64("LAND_RISE_DROP", land_rise).max(0.05);
+    // LAND_RISE_DROP_H (m, unset = LAND_DROP_H): LAND_HOLD_DROP and
+    // LAND_RISE_DROP only on a landing at least this far below the surface
+    // the jump left. Measured 2026-11-14 (jb91, DD without the correction
+    // hop, 2 seeds, 144 a height): HOLD 0.1 + RISE 0.7 stands 123 / 131 /
+    // 131 / 130 / 128 off 10 / 20 / 30 / 40 / 50 cm against 135 / 134 / 131
+    // / 123 / 114.
+    let land_rise_drop_h = env_f64("LAND_RISE_DROP_H", land_drop_h);
+    let mut drop_dz = 0.0_f64; // how far below the take-off surface the last first touchdown was
     // LAND_STEP=1: after touchdown, if the DCM (c + v/omega) leaves the
     // feet's fore-aft support (within LAND_STEP_MARGIN of an edge), take one
     // capture step: the foot farther from the DCM's lateral position swings
@@ -1373,6 +1381,7 @@ fn main() {
                     if !dz.is_empty() {
                         let gz = dz.iter().sum::<f64>() / dz.len() as f64;
                         drop_land = gz - ground_dz < -land_drop_h;
+                        drop_dz = ground_dz - gz;
                         ground_dz = gz;
                         stand_z = stand_z0 + ground_dz;
                         fz_stand = fz_stand0.map(|z| z + ground_dz);
@@ -1594,7 +1603,7 @@ fn main() {
                         cd[i] = vv;
                         cdd[i] = aa;
                     }
-                    let (lh, lr) = if drop_land { (land_hold_drop, land_rise_drop) } else { (land_hold, land_rise) };
+                    let (lh, lr) = if drop_land && drop_dz > land_rise_drop_h { (land_hold_drop, land_rise_drop) } else { (land_hold, land_rise) };
                     let s_rise = s - land_t - lh;
                     if s_rise > 0.0 {
                         let z_low = c0.z + 0.5 * v0.z * land_t;
