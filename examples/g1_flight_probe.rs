@@ -628,6 +628,17 @@ fn main() {
     // (CoM - ankle origin +0.00 at 0.8 s, -0.05 to -0.09 at 1.5 s; standing
     // runs +0.03 to +0.08 and +-0.016) and fall backward.
     let land_ref_soles = std::env::var("LAND_REF_SOLES").ok().map(|s| s.trim().parse::<f64>().unwrap().max(0.02));
+    // LAND_REF_SOLES_DROP=T (s, unset = LAND_REF_SOLES) and LAND_REF_DROP_DX=d
+    // (m, default 0): the same, on a landing at least LAND_DROP_H below the
+    // surface the jump left (as KP/KD_TRUNK_LAND_DROP), with the goal d m
+    // further along world x. Measured 2026-11-14 (jb86, DD off 30-50 cm,
+    // h_y < 0.3): the members that fall back and those that stand have the
+    // CoM at the same place over the soles at touchdown and at the bottom
+    // of the sink (-0.07, -0.01 m); 1.1 s later it is back at -0.084 against
+    // -0.048. jb81 (LAND_REF_SOLES 0.5 on every landing, 30-40 cm): 34 -> 69
+    // of 128 standing alone, 111 -> 116 with the trunk gains.
+    let land_ref_soles_drop = std::env::var("LAND_REF_SOLES_DROP").ok().map(|s| s.trim().parse::<f64>().unwrap().max(0.02)).or(land_ref_soles);
+    let land_ref_drop_dx = env_f64("LAND_REF_DROP_DX", 0.0);
     // LAND_GROUND_Z=1 (default on with JUMP_BOX): at each touchdown the
     // stand height and the standing foot heights move with the surface the
     // robot lands on -- the loaded feet's height then minus at the start;
@@ -1610,8 +1621,11 @@ fn main() {
                         c.x += mid.x - m0.x;
                         c.y += mid.y - m0.y;
                     }
-                    if let (Some(tb), Some(off)) = (land_ref_soles, stand_off) && s > land_t {
-                        let goal = 0.5 * (sole(0) + sole(1)) + off;
+                    if let (Some(tb), Some(off)) = (if drop_land { land_ref_soles_drop } else { land_ref_soles }, stand_off) && s > land_t {
+                        let mut goal = 0.5 * (sole(0) + sole(1)) + off;
+                        if drop_land {
+                            goal.x += land_ref_drop_dx;
+                        }
                         let (w, dw, ddw) = quintic(0.0, 0.0, 1.0, tb, s - land_t);
                         for i in 0..2 {
                             let e = goal[i] - c[i];
