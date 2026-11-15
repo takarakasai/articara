@@ -306,6 +306,18 @@ fn main() {
     // (an axis within its tolerance jumps at JUMP_VY 0 / at the scale its
     // small remainder reads), and the jumps stop once both are within.
     let fwd_lat_both = jump_fwd_target.is_some() && jump_lat_target.is_some();
+    // JUMP_PLANE_SEQ=1 (with both targets): jump the sideways distance first
+    // at the scale JUMP_FWD_TAB reads for 0 m, then the forward one. Measured
+    // 2026-11-15 (jb108): both at once, the backward hop (scale 0) with a
+    // sideways push falls after the second landing (-0.3, +0.3: 3 / 7 of 16
+    // at 1.5) and at 2.0 the full forward jump with JUMP_VY -0.6 falls on
+    // the first landing (+0.5, -0.3: 7 / 12 of 16); each axis alone stands
+    // 15-16 of 16.
+    let plane_seq = fwd_lat_both && flag("JUMP_PLANE_SEQ", false);
+    if plane_seq {
+        fwd_s = fwd_s_for(0.0);
+        println!("jump plane seq: sideways first at scale {fwd_s:.4}");
+    }
     let (mut lat_feet0, mut lat_feet_last): (Option<f64>, f64) = (None, 0.0);
     // JUMP_BOX_GAP=g (m, unset = off; needs JUMP_BOX, JUMP_FWD_TAB and
     // JUMP_REPEAT): hop on the flat (scale read off JUMP_FWD_TAB) until the
@@ -395,6 +407,7 @@ fn main() {
     });
     if let (Some(b), Some(dx)) = (jump_fwd_back, jump_fwd_target)
         && dx - jump_fwd_drop < 0.0
+        && !plane_seq
     {
         (jv, crouch, jvx, jlean) = b;
         fwd_s = fwd_s_at(dx - jump_fwd_drop, jv);
@@ -1271,17 +1284,22 @@ fn main() {
             }
         }
         if let Some(tgt) = jump_fwd_target
-            && (!fwd_reached || fwd_lat_both)
+            && (!fwd_reached || (fwd_lat_both && !lat_reached))
             && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
             && let Some(x0) = fwd_feet0
         {
             let done = soles_mid_x(&data.oMi, &feet, prof.sole_centre_x) - x0;
-            let rem = tgt - done;
+            let rem_x = tgt - done;
             if fwd_lat_both {
-                fwd_reached = rem.abs() < jump_fwd_tol;
+                fwd_reached = rem_x.abs() < jump_fwd_tol;
             }
+            // JUMP_PLANE_SEQ: the sideways axis first, at the scale that
+            // moves the soles 0 in x
+            let lat_pending = plane_seq
+                && jump_lat_target.zip(lat_feet0).is_some_and(|(ty, y0)| (ty - (soles_mid_y(&data.oMi, &feet, prof.sole_centre_x) - y0)).abs() >= jump_lat_tol);
+            let rem = if lat_pending { 0.0 } else { rem_x };
             if rem.abs() < jump_fwd_tol && !fwd_lat_both {
                 fwd_reached = true;
                 println!("  [fwd-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: no more jumps");
@@ -1301,7 +1319,7 @@ fn main() {
             }
         }
         if let Some(tgt) = jump_lat_target
-            && (!lat_reached || fwd_lat_both)
+            && (!lat_reached || (fwd_lat_both && !fwd_reached))
             && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
