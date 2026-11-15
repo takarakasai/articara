@@ -314,6 +314,7 @@ fn main() {
     // the first landing (+0.5, -0.3: 7 / 12 of 16); each axis alone stands
     // 15-16 of 16.
     let plane_seq = fwd_lat_both && flag("JUMP_PLANE_SEQ", false);
+    let mut plane_done = false;
     if plane_seq {
         fwd_s = fwd_s_for(0.0);
         println!("jump plane seq: sideways first at scale {fwd_s:.4}");
@@ -1284,7 +1285,7 @@ fn main() {
             }
         }
         if let Some(tgt) = jump_fwd_target
-            && (!fwd_reached || (fwd_lat_both && !lat_reached))
+            && (!fwd_reached || (fwd_lat_both && !plane_done))
             && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
@@ -1319,7 +1320,7 @@ fn main() {
             }
         }
         if let Some(tgt) = jump_lat_target
-            && (!lat_reached || (fwd_lat_both && !fwd_reached))
+            && (!lat_reached || (fwd_lat_both && !plane_done))
             && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
@@ -1340,6 +1341,10 @@ fn main() {
                 jvy = lat_vy_for(rem);
                 println!("  [lat-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: JUMP_VY {jvy:+.3}");
             }
+        }
+        // both targets: checked once per re-arm, done once both are within
+        if fwd_lat_both && fwd_reached && lat_reached {
+            plane_done = true;
         }
         if let (Some(_), Some((_, bh, _))) = (jump_box_gap, jump_box)
             && !fwd_reached
