@@ -953,6 +953,13 @@ fn main() {
     let hop_t_lift = hop_shift_t0 + hop_shift_t;
     let hop_foot_com = flag("HOP_FOOT_COM", false);
     let hop_flight_y = flag("HOP_FLIGHT_Y", false);
+    // HOP_FLIGHT_TOE=rad (with HOP_LEG and FLIGHT_FEET_YAW): in flight, turn
+    // the stance foot to this toe-out yaw from the START heading (world yaw
+    // 0) instead of holding its lift-off yaw. Measured 2026-11-15 (JUMP_REPEAT,
+    // 347 landings without FLIGHT_FEET_YAW): toe-out -0.1..+0.2 at touchdown
+    // never fell (250), toe-in past -0.1 fell 20 of 42; the free yaw lands
+    // toe-out ~+0.1 on the first hop and then drifts.
+    let hop_flight_toe = std::env::var("HOP_FLIGHT_TOE").ok().map(|s| s.parse::<f64>().expect("HOP_FLIGHT_TOE"));
     // HOP_FLIGHT_Y_CAPTURE: the lateral capture gain of HOP_FLIGHT_Y (unset
     // = FLIGHT_FEET_CAPTURE). Measured 2026-11-15 (JUMP_REPEAT): at 0.55 a
     // hop that lands with vy 0.2 m/s puts the sole 2.4 cm past the CoM where
@@ -1557,6 +1564,9 @@ fn main() {
                         let m = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
                         m[(1, 0)].atan2(m[(0, 0)])
                     });
+                }
+                if flight_feet_yaw && let (Some(sl), Some(toe)) = (hop_leg, hop_flight_toe) {
+                    feet_yaw0[sl] = if sl == 0 { toe } else { -toe };
                 }
                 // FLIGHT_FEET_LEVEL=1: hold both feet at the LOWER foot's
                 // height below the CoM, so they meet a flat floor together.
