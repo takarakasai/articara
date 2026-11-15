@@ -905,6 +905,39 @@ fn main() {
     let mut foot_stand_z: Option<[f64; 2]> = None;
     let kp_ffr = env_f64("KP_FLIGHT_FEET_ROT", 400.0);
     let kd_ffr = env_f64("KD_FLIGHT_FEET_ROT", 40.0);
+    // HOP_LEG=L|R (unset = off): hop on that leg alone. From HOP_SHIFT_T0
+    // the CoM reference moves over HOP_SHIFT_T s to the stance sole's centre
+    // (HOP_COM_DY m further toward the free side); then the free foot
+    // leaves the contact set for good and rises HOP_LIFT_H m over
+    // HOP_LIFT_T s, sole level (task "hop foot", weight HOP_FOOT_W, gains
+    // KP/KD_HOP_FOOT), and is held at that offset from the stance foot
+    // outside flight (in flight the flight-feet task holds it). The free
+    // foot's lost load never counts as a release (RELEASE_FIRST_OFF). Set
+    // T_LAUNCH after the lift. Off = bit-identical.
+    let hop_leg: Option<usize> = std::env::var("HOP_LEG").ok().map(|s| match s.as_str() {
+        "L" | "l" => 0,
+        "R" | "r" => 1,
+        _ => panic!("HOP_LEG must be L or R"),
+    });
+    let hop_free = hop_leg.map(|s| 1 - s);
+    let hop_shift_t0 = env_f64("HOP_SHIFT_T0", 0.3);
+    let hop_shift_t = env_f64("HOP_SHIFT_T", 1.0);
+    let hop_lift_t = env_f64("HOP_LIFT_T", 0.5);
+    let hop_lift_h = env_f64("HOP_LIFT_H", 0.08);
+    let hop_com_dy = env_f64("HOP_COM_DY", 0.0);
+    let hop_foot_w = env_f64("HOP_FOOT_W", 1.0);
+    let kp_hop = env_f64("KP_HOP_FOOT", 400.0);
+    let kd_hop = env_f64("KD_HOP_FOOT", 40.0);
+    let hop_t_lift = hop_shift_t0 + hop_shift_t;
+    let hop_foot_com = flag("HOP_FOOT_COM", false);
+    let hop_flight_y = flag("HOP_FLIGHT_Y", false);
+    let hop_land_ref = std::env::var("HOP_LAND_REF").ok().and_then(|s| s.parse::<f64>().ok());
+    let mut hop_rel_com: Option<na::Vector3<f64>> = None;
+    let hop_kp_com_y = env_f64("HOP_KP_COM_Y", env_f64("KP_COM", 300.0));
+    let hop_kd_com_y = env_f64("HOP_KD_COM_Y", env_f64("KD_COM", 80.0));
+    let mut hop_c0: Option<(na::Vector2<f64>, na::Vector2<f64>)> = None; // CoM ref at the shift start, goal
+    let mut hop_p0: Option<na::Vector3<f64>> = None; // free foot at the lift start
+    let mut hop_rel: Option<na::Vector3<f64>> = None; // free foot - stance foot after the lift
     let mut feet_off: Option<[na::Vector3<f64>; 2]> = None;
     // JUMP_REPEAT=n (0 = off): after a jump has ended in stance (touchdown,
     // abort or air-abort, with LAND_ABSORB) and JUMP_REPEAT_AFTER s have
@@ -1248,6 +1281,15 @@ fn main() {
                 }
             }
         }
+        if let Some(fr) = hop_free && t >= hop_t_lift {
+            if in_contact[fr] {
+                anchors.release(fr);
+                let p = misarta::se3::translation(&data.oMi[feet[fr]]);
+                println!("  [hop-lift] t={t:.3} free foot {} out of the contact set at ({:+.3},{:+.3},{:+.3}), com ({:+.3},{:+.3}) fz {:.0} {:.0}", if fr == 0 { "L" } else { "R" }, p.x, p.y, p.z, com.x, com.y, measured.cop[0][2], measured.cop[1][2]);
+            }
+            in_contact[fr] = false;
+            flip_count[fr] = 0;
+        }
         if jump_repeat > 0 {
             let (fl, fr) = (measured.cop[0][2].max(0.0), measured.cop[1][2].max(0.0));
             if fl + fr > 0.5 * weight {
@@ -1548,6 +1590,21 @@ fn main() {
             }
             _ => {}
         }
+        if let Some(sl) = hop_leg && touchdown_t.is_none() && t < t_launch && t >= hop_shift_t0 {
+            let (c0, goal) = *hop_c0.get_or_insert_with(|| {
+                let o = misarta::se3::translation(&data.oMi[feet[sl]]);
+                let m = misarta::se3::rotation_matrix(&data.oMi[feet[sl]]);
+                let c = (o + m * na::Vector3::new(prof.sole_centre_x, 0.0, 0.0)).xy();
+                let dy = if sl == 0 { -hop_com_dy } else { hop_com_dy };
+                let c0 = com_ref.unwrap_or(com).xy();
+                println!("  [hop-shift] t={t:.3} stance {} sole centre ({:+.3},{:+.3}): com ref ({:+.3},{:+.3}) -> ({:+.3},{:+.3}) over {hop_shift_t:.2} s", if sl == 0 { "L" } else { "R" }, c.x, c.y, c0.x, c0.y, c.x, c.y + dy);
+                (c0, na::Vector2::new(c.x, c.y + dy))
+            });
+            let (w, _, _) = quintic(0.0, 0.0, 1.0, hop_shift_t, t - hop_shift_t0);
+            let r = com_ref.get_or_insert(com);
+            r.x = c0.x + w * (goal.x - c0.x);
+            r.y = c0.y + w * (goal.y - c0.y);
+        }
         let c_ref = *com_ref.get_or_insert(com);
         if land_step
             && step_st.is_none()
@@ -1802,6 +1859,20 @@ fn main() {
                             cdd[i] = (1.0 - w) * cdd[i] + ddw * e;
                         }
                     }
+                    // HOP_LAND_REF (s, with HOP_LEG): from the touchdown, carry
+                    // the reference's horizontal part to the stance sole's
+                    // centre (HOP_COM_DY toward the free side) over this time.
+                    if let (Some(sl), Some(tb)) = (hop_leg, hop_land_ref) {
+                        let mut goal = sole(sl);
+                        goal.y += if sl == 0 { -hop_com_dy } else { hop_com_dy };
+                        let (w, dw, ddw) = quintic(0.0, 0.0, 1.0, tb, s);
+                        for i in 0..2 {
+                            let e = goal[i] - c[i];
+                            c[i] += w * e;
+                            cd[i] = (1.0 - w) * cd[i] + dw * e;
+                            cdd[i] = (1.0 - w) * cdd[i] + ddw * e;
+                        }
+                    }
                     (c, cd, cdd)
                 }
                 None if jump_v > 0.0 && t >= t_launch && push_end.is_none() => {
@@ -1882,7 +1953,7 @@ fn main() {
                                 ay = 0.0;
                             }
                             let unloaded = measured.cop[0][2] <= f_on && measured.cop[1][2] <= f_on;
-                            let one_off = release_first_off && !unloaded && (measured.cop[0][2] <= f_on || measured.cop[1][2] <= f_on);
+                            let one_off = release_first_off && hop_free.is_none() && !unloaded && (measured.cop[0][2] <= f_on || measured.cop[1][2] <= f_on);
                             if one_off {
                                 push_end = Some(t);
                                 air_sched = true;
@@ -2011,6 +2082,15 @@ fn main() {
                 cdd_ref.y = w2 * (com.y - p_st.y);
             }
             let a_com = cdd_ref + kd_com * (cd_ref - com_vel) + kp_com * (c_ref - com);
+            // HOP_KP/KD_COM_Y (with HOP_LEG; default = KP/KD_COM): the CoM's
+            // lateral gains on the one stance foot.
+            let a_com = if hop_leg.is_some() {
+                let mut a = a_com;
+                a.y = cdd_ref.y + hop_kd_com_y * (cd_ref.y - com_vel.y) + hop_kp_com_y * (c_ref.y - com.y);
+                a
+            } else {
+                a_com
+            };
             diag_com_cmd = Some((c_ref, a_com));
             diag_com_vref = Some((cd_ref, cdd_ref));
             levels.push(bt::com(dyn_ctx.qddot(), &st.j_com, &st.djv_com, &a_com));
@@ -2230,11 +2310,33 @@ fn main() {
                         let along = o.dot(&d);
                         *o += d * ((tgt - along) * b);
                     }
+                } else if let Some(sl) = hop_leg {
+                    // one-leg hop: the stance foot to the capture point, the
+                    // lifted foot shifted with it (not swung to the same x)
+                    let tgt = flight_feet_capture * com_vel.x / (G / h).sqrt() - prof.sole_centre_x;
+                    let d = (tgt - off[sl].x) * b;
+                    for o in off.iter_mut() {
+                        o.x += d;
+                    }
                 } else {
                     let tgt = flight_feet_capture * com_vel.x / (G / h).sqrt() - prof.sole_centre_x;
                     for o in off.iter_mut() {
                         o.x += (tgt - o.x) * b;
                     }
+                }
+            }
+            // HOP_FLIGHT_Y=1 (with HOP_LEG): in flight, carry the stance
+            // foot's lateral offset to FLIGHT_FEET_CAPTURE times the CoM's
+            // lateral capture offset (vy / omega) over FLIGHT_FEET_CAPTURE_T,
+            // the lifted foot along with it.
+            if hop_flight_y && let (Some(sl), Some(t0f)) = (hop_leg, flight_t0) {
+                let h = (stand_z - (fz_stand[0].min(fz_stand[1]) - prof.sole_below_origin)).max(0.3);
+                let b = ((t - t0f) / flight_feet_capture_t).clamp(0.0, 1.0);
+                let b = b * b * (3.0 - 2.0 * b);
+                let tgt = flight_feet_capture * com_vel.y / (G / h).sqrt() + if sl == 0 { hop_com_dy } else { -hop_com_dy };
+                let d = (tgt - off[sl].y) * b;
+                for o in off.iter_mut() {
+                    o.y += d;
                 }
             }
             if flight_feet_width > 0.0 && let Some(t0f) = flight_t0 {
@@ -2348,7 +2450,7 @@ fn main() {
         }
         if foot_reseat && !flight && touchdown_t.is_some() && flight_t0.is_none() {
             for k in 0..2 {
-                if in_contact[k] || step_st.is_some_and(|x| x.0 == k) {
+                if in_contact[k] || step_st.is_some_and(|x| x.0 == k) || hop_free == Some(k) {
                     continue;
                 }
                 let Some(xy) = reseat_xy[k] else { continue };
@@ -2370,6 +2472,45 @@ fn main() {
                 ));
                 names.push("reseat");
             }
+        }
+        if let (Some(sl), Some(fr)) = (hop_leg, hop_free) && !flight && t >= hop_t_lift {
+            let jf = misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, feet[fr]);
+            let djv = &misarta::jacobian::compute_joint_jacobian_time_derivative(&rig.model, q, v, feet[fr]) * v_dvec;
+            let pos = misarta::se3::translation(&data.oMi[feet[fr]]);
+            let vel3 = &jf.rows(3, 3).into_owned() * v_dvec;
+            let vel = na::Vector3::new(vel3[0], vel3[1], vel3[2]);
+            let p0 = *hop_p0.get_or_insert(pos);
+            let p_st = misarta::se3::translation(&data.oMi[feet[sl]]);
+            let s = t - hop_t_lift;
+            let (tgt, tgt_v) = if s < hop_lift_t && hop_rel.is_none() {
+                let (h, dh, _) = quintic(0.0, 0.0, hop_lift_h, hop_lift_t, s);
+                (p0 + na::Vector3::new(0.0, 0.0, h), na::Vector3::new(0.0, 0.0, dh))
+            } else {
+                let rel = *hop_rel.get_or_insert_with(|| {
+                    let rel = p0 + na::Vector3::new(0.0, 0.0, hop_lift_h) - p_st;
+                    println!("  [hop-lifted] t={t:.3} free foot at ({:+.3},{:+.3},{:+.3}) (target rel ({:+.3},{:+.3},{:+.3})), com ({:+.3},{:+.3}) stance sole ({:+.3},{:+.3})", pos.x, pos.y, pos.z, rel.x, rel.y, rel.z, com.x, com.y, p_st.x + prof.sole_centre_x, p_st.y);
+                    rel
+                });
+                if hop_foot_com {
+                    // HOP_FOOT_COM=1: the lifted foot's offset from the CoM
+                    // instead (it comes down with the crouch)
+                    let rc = *hop_rel_com.get_or_insert(p_st + rel - com);
+                    (com + rc, com_vel)
+                } else {
+                    (p_st + rel, na::Vector3::zeros())
+                }
+            };
+            let rot = misarta::se3::rotation_matrix(&data.oMi[feet[fr]]);
+            let yaw = rot[(1, 0)].atan2(rot[(0, 0)]);
+            let rot_tgt = *na::Rotation3::from_axis_angle(&na::Vector3::z_axis(), yaw).matrix();
+            let w3 = &jf.rows(0, 3).into_owned() * v_dvec;
+            let omega = na::Vector3::new(w3[0], w3[1], w3[2]);
+            levels.push(bt::swing_with_pose(
+                dyn_ctx.qddot(), &jf, &djv, &pos, &vel, &tgt, &tgt_v,
+                kp_hop, kp_hop, kd_hop, bt::SwingAxes::XyzRollPitch,
+                Some((rot, rot_tgt, omega, kp_ffr, kd_ffr)),
+            ));
+            names.push("hop foot");
         }
         if let Some((sw, t0s, p0, p1, _)) = step_st {
             let s = ((t - t0s) / land_step_t).clamp(0.0, 1.0);
@@ -2430,6 +2571,7 @@ fn main() {
                     "trunk yaw" => stance_trunk_yaw,
                     "step swing" => land_step_w,
                     "reseat" => foot_reseat_w,
+                    "hop foot" => hop_foot_w,
                     "momentum roll" => jump_mom_x_w,
                     "fz sym" => jump_fz_sym_w,
                     // WBCW_MOMENTUM_PUSH: the momentum weight during the push
@@ -2479,6 +2621,37 @@ fn main() {
             );
         }
 
+        // DIAG_HOP=1 (with HOP_LEG): every 20 ms from the shift on, the
+        // lateral state on the stance foot.
+        if let Some(sl) = hop_leg && flag("DIAG_HOP", false) && tick % 10 == 0 && t >= hop_shift_t0 && touchdown_t.is_none_or(|t0| t - t0 <= 1.5) {
+            let a_sol = &st.j_com * &ex.qddot + st.djv_com;
+            let (cr, ac) = diag_com_cmd.unwrap_or((com, na::Vector3::zeros()));
+            let cmm = misarta::centroidal::compute_centroidal_momentum_matrix(&rig.model, q);
+            let h = &cmm * v_dvec;
+            let m = misarta::se3::rotation_matrix(&data.oMi[feet[sl]]);
+            let (r, _, _) = na::Rotation3::from_matrix_unchecked(m).euler_angles();
+            let o = misarta::se3::translation(&data.oMi[feet[sl]]);
+            let side = if sl == 0 { "left" } else { "right" };
+            let tq = |part: &str| -> String {
+                rig.actuated()
+                    .iter()
+                    .find(|&&(ji, _)| rig.robot.joints[ji].name == format!("{side}_{part}_joint"))
+                    .map_or("?".into(), |&(_, vi)| format!("{:+.0}/{:.0}", ex.tau[vi - 6], rig.torque_max[vi - 6]))
+            };
+            println!(
+                "  [hop] t={t:.3} nc={nc} {} com y {:+.4} ref {:+.4} vy {:+.3} ay cmd {:+.2} sol {:+.2} | z {:.3} vz {:+.3} az cmd {:+.2} sol {:+.2} | h_x {:+.3} roll {:+.3} | sole y {:+.4} roll {r:+.3} cop ({:+.3},{:+.3}) fz {:.0} | hip roll {} ankle roll {} ankle pitch {}",
+                if flight { "AIR" } else if push_phase { "PSH" } else { "GND" },
+                com.y, cr.y, com_vel.y, ac.y, a_sol[1], com.z, com_vel.z, ac.z, a_sol[2], h[0], roll, o.y, measured.cop[sl][0], measured.cop[sl][1], measured.cop[sl][2],
+                tq("hip_roll"), tq("ankle_roll"), tq("ankle_pitch")
+            );
+            let mut use_: Vec<(f64, String)> = rig
+                .actuated()
+                .iter()
+                .map(|&(ji, vi)| (ex.tau[vi - 6].abs() / rig.torque_max[vi - 6], format!("{} {:+.0}/{:.0}", rig.robot.joints[ji].name.trim_end_matches("_joint"), ex.tau[vi - 6], rig.torque_max[vi - 6])))
+                .collect();
+            use_.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+            println!("  [hop-tau] t={t:.3} {}", use_.iter().take(4).map(|(u, s)| format!("{s} ({u:.2})")).collect::<Vec<_>>().join(", "));
+        }
         if diag_pushf && jump_v > 0.0 && tick % diag_pushf_every == 0 && t >= t_launch + jump_t_crouch + jump_t_hold - 0.02
             && push_end.is_none_or(|te| t <= te + 0.01)
         {
