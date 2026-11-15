@@ -302,6 +302,10 @@ fn main() {
     }
     let mut lat_reached = false;
     let jump_lat = jump_vy != 0.0 || jump_lean_y != 0.0 || jump_lat_target.is_some();
+    // JUMP_FWD_TARGET and JUMP_LAT_TARGET together: every re-arm checks both
+    // (an axis within its tolerance jumps at JUMP_VY 0 / at the scale its
+    // small remainder reads), and the jumps stop once both are within.
+    let fwd_lat_both = jump_fwd_target.is_some() && jump_lat_target.is_some();
     let (mut lat_feet0, mut lat_feet_last): (Option<f64>, f64) = (None, 0.0);
     // JUMP_BOX_GAP=g (m, unset = off; needs JUMP_BOX, JUMP_FWD_TAB and
     // JUMP_REPEAT): hop on the flat (scale read off JUMP_FWD_TAB) until the
@@ -1267,7 +1271,7 @@ fn main() {
             }
         }
         if let Some(tgt) = jump_fwd_target
-            && !fwd_reached
+            && (!fwd_reached || fwd_lat_both)
             && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
@@ -1275,7 +1279,10 @@ fn main() {
         {
             let done = soles_mid_x(&data.oMi, &feet, prof.sole_centre_x) - x0;
             let rem = tgt - done;
-            if rem.abs() < jump_fwd_tol {
+            if fwd_lat_both {
+                fwd_reached = rem.abs() < jump_fwd_tol;
+            }
+            if rem.abs() < jump_fwd_tol && !fwd_lat_both {
                 fwd_reached = true;
                 println!("  [fwd-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: no more jumps");
             } else if let Some(b) = jump_fwd_back {
@@ -1294,7 +1301,7 @@ fn main() {
             }
         }
         if let Some(tgt) = jump_lat_target
-            && !lat_reached
+            && (!lat_reached || fwd_lat_both)
             && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
@@ -1304,8 +1311,14 @@ fn main() {
             let rem = tgt - done;
             if rem.abs() < jump_lat_tol {
                 lat_reached = true;
-                println!("  [lat-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: no more jumps");
+                if fwd_lat_both {
+                    jvy = 0.0;
+                    println!("  [lat-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: reached, JUMP_VY 0");
+                } else {
+                    println!("  [lat-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: no more jumps");
+                }
             } else {
+                lat_reached = false;
                 jvy = lat_vy_for(rem);
                 println!("  [lat-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: JUMP_VY {jvy:+.3}");
             }
@@ -1329,7 +1342,10 @@ fn main() {
                 println!("  [box-gap] t={t:.3} toe to box {gap:+.3} m: scale {fwd_s:.4}");
             }
         }
-        if jump_repeat > repeats_done && !turn_reached && !fwd_reached && !lat_reached && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
+        if jump_repeat > repeats_done && !turn_reached
+            && !(fwd_reached && (jump_lat_target.is_none() || lat_reached))
+            && !(lat_reached && (jump_fwd_target.is_none() || fwd_reached))
+            && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
         {
