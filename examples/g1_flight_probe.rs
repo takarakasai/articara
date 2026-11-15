@@ -934,6 +934,22 @@ fn main() {
     // the posture down in the crouch and rests on the floor; in a repeated
     // hop it scuffs (fz ~40 N) and rolls the stance sole onto its edge.
     let kp_hop_z = env_f64("KP_HOP_FOOT_Z", kp_hop);
+    // HOP_PUSH_PELVIS=1: during the push (after the crouch and the hold, up
+    // to the release), hold the lifted foot where it was in the PELVIS frame
+    // at the push start (task "hop foot push", weight HOP_PUSH_FOOT_W, unset =
+    // HOP_FOOT_W). Measured 2026-11-15 (JUMP_REPEAT): with the foot held in
+    // the world at weight 0.03 it swings 9 cm forward in the push (h_z
+    // +0.69 from the lifted leg), the pelvis turns the other way and a hop
+    // lands with the pelvis and the held foot yaw 0.46 rad apart.
+    let hop_push_pelvis = flag("HOP_PUSH_PELVIS", false);
+    let hop_push_foot_w = env_f64("HOP_PUSH_FOOT_W", hop_foot_w);
+    let mut hop_rel_pelvis: Option<na::Vector3<f64>> = None;
+    // HOP_TRUNK_YAW=w (with HOP_LEG, 0 = off): on the ground from the start
+    // (not only after a landing like STANCE_TRUNK_YAW), a yaw-only pelvis
+    // task toward the STANCE sole's yaw (not the two soles' mean: the lifted
+    // foot's yaw is free). Measured 2026-11-15: in the one-leg crouch the
+    // pelvis turns 0.08 rad off the stance foot before the push.
+    let hop_trunk_yaw = if hop_leg.is_some() { env_f64("HOP_TRUNK_YAW", 0.0).max(0.0) } else { 0.0 };
     let hop_t_lift = hop_shift_t0 + hop_shift_t;
     let hop_foot_com = flag("HOP_FOOT_COM", false);
     let hop_flight_y = flag("HOP_FLIGHT_Y", false);
@@ -2174,9 +2190,13 @@ fn main() {
         }
         let turn_ramp = jump_turn_hz != 0.0 && jump_v > 0.0 && t - t_launch >= jump_t_crouch + jump_t_hold - jump_turn_t0 && touchdown_t.is_none();
         let stance_yaw = !flight && stance_trunk_yaw > 0.0 && ever_landed && !(jump_turn_free_yaw && turn_ramp);
-        if (flight && flight_trunk_yaw > 0.0) || stance_yaw {
+        let hop_yaw = !flight && hop_trunk_yaw > 0.0 && !stance_yaw;
+        if (flight && flight_trunk_yaw > 0.0) || stance_yaw || hop_yaw {
             let tgt = if flight {
                 trunk_yaw0
+            } else if hop_yaw && let Some(sl) = hop_leg {
+                let m = misarta::se3::rotation_matrix(&data.oMi[feet[sl]]);
+                m[(1, 0)].atan2(m[(0, 0)])
             } else {
                 let (sy, cy) = (0..2).fold((0.0, 0.0), |(a, b), k| {
                     let m = misarta::se3::rotation_matrix(&data.oMi[feet[k]]);
@@ -2199,7 +2219,7 @@ fn main() {
                 &na::DVector::from_vec(vec![djv_base[2]]),
                 &na::DVector::from_vec(vec![a]),
             ));
-            names.push("trunk yaw");
+            names.push(if hop_yaw { "trunk yaw hop" } else { "trunk yaw" });
         }
         if !flight || flight_post {
             levels.push(bt::posture(
@@ -2530,7 +2550,24 @@ fn main() {
             let p0 = *hop_p0.get_or_insert(pos);
             let p_st = misarta::se3::translation(&data.oMi[feet[sl]]);
             let s = t - hop_t_lift;
-            let (tgt, tgt_v) = if s < hop_lift_t && hop_rel.is_none() {
+            let hop_in_push = hop_push_pelvis && jump_v > 0.0 && push_end.is_none() && t >= t_launch + jump_t_crouch + jump_t_hold;
+            if !hop_in_push {
+                hop_rel_pelvis = None;
+            }
+            let (tgt, tgt_v) = if hop_in_push {
+                let pp = misarta::se3::translation(&data.oMi[1]);
+                let rp = misarta::se3::rotation_matrix(&data.oMi[1]);
+                let rel = *hop_rel_pelvis.get_or_insert_with(|| {
+                    let rel = rp.transpose() * (pos - pp);
+                    println!("  [hop-push-pelvis] t={t:.3} free foot at ({:+.3},{:+.3},{:+.3}), in the pelvis frame ({:+.3},{:+.3},{:+.3})", pos.x, pos.y, pos.z, rel.x, rel.y, rel.z);
+                    rel
+                });
+                let jp = misarta::jacobian::compute_joint_jacobian_from_data(&rig.model, q, data, 1);
+                let tw = &jp * v_dvec;
+                let (w_p, v_p) = (na::Vector3::new(tw[0], tw[1], tw[2]), na::Vector3::new(tw[3], tw[4], tw[5]));
+                let r = rp * rel;
+                (pp + r, v_p + w_p.cross(&r))
+            } else if s < hop_lift_t && hop_rel.is_none() {
                 let (h, dh, _) = quintic(0.0, 0.0, hop_lift_h, hop_lift_t, s);
                 (p0 + na::Vector3::new(0.0, 0.0, h), na::Vector3::new(0.0, 0.0, dh))
             } else {
@@ -2558,7 +2595,7 @@ fn main() {
                 kp_hop, kp_hop_z, kd_hop, bt::SwingAxes::XyzRollPitch,
                 Some((rot, rot_tgt, omega, kp_ffr, kd_ffr)),
             ));
-            names.push("hop foot");
+            names.push(if hop_in_push { "hop foot push" } else { "hop foot" });
         }
         if let Some((sw, t0s, p0, p1, _)) = step_st {
             let s = ((t - t0s) / land_step_t).clamp(0.0, 1.0);
@@ -2620,6 +2657,8 @@ fn main() {
                     "step swing" => land_step_w,
                     "reseat" => foot_reseat_w,
                     "hop foot" => hop_foot_w,
+                    "hop foot push" => hop_push_foot_w,
+                    "trunk yaw hop" => hop_trunk_yaw,
                     "momentum roll" => jump_mom_x_w,
                     "momentum yaw" => hop_mom_z_w,
                     "fz sym" => jump_fz_sym_w,
