@@ -949,6 +949,14 @@ fn main() {
     // task toward the STANCE sole's yaw (not the two soles' mean: the lifted
     // foot's yaw is free). Measured 2026-11-15: in the one-leg crouch the
     // pelvis turns 0.08 rad off the stance foot before the push.
+    // HOP_MOM_LAND_W=w (with HOP_LEG): the momentum weight on the ground for
+    // HOP_MOM_LAND_T s (default 2) from each touchdown (default = WBCW_MOMENTUM).
+    // Measured 2026-11-15 (JUMP_REPEAT): after a one-leg landing the CoP sits
+    // on the sole's inner edge and the CoM walks over it; the CoM task asks
+    // +11 m/s^2 outward and gets ~0, the momentum task (10) forbidding the
+    // hip strategy that is all that is left.
+    let hop_mom_land_w = std::env::var("HOP_MOM_LAND_W").ok().map(|s| s.parse::<f64>().expect("HOP_MOM_LAND_W"));
+    let hop_mom_land_t = env_f64("HOP_MOM_LAND_T", 2.0);
     let hop_trunk_yaw = if hop_leg.is_some() { env_f64("HOP_TRUNK_YAW", 0.0).max(0.0) } else { 0.0 };
     let hop_t_lift = hop_shift_t0 + hop_shift_t;
     let hop_foot_com = flag("HOP_FOOT_COM", false);
@@ -2674,6 +2682,9 @@ fn main() {
                     "fz sym" => jump_fz_sym_w,
                     // WBCW_MOMENTUM_PUSH: the momentum weight during the push
                     // and the release only (default = WBCW_MOMENTUM).
+                    "momentum" if hop_mom_land_w.is_some() && hop_leg.is_some() && !flight && touchdown_t.is_some_and(|t0| t - t0 < hop_mom_land_t) => {
+                        hop_mom_land_w.unwrap()
+                    }
                     "momentum" if in_push => env_f64("WBCW_MOMENTUM_PUSH", mom_w),
                     "momentum" => mom_w,
                     "contact+cones" if contact_rest && box_jump_now && repeats_done > 0 && jump_box_crouch_w.is_some() && jump_v > 0.0 && t >= t_launch && push_end.is_none() => {
