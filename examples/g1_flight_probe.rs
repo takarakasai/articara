@@ -810,6 +810,13 @@ fn main() {
     // rad in flight) and, back on the ground, turning it back twisted a
     // foot 0.4 rad on the floor.
     let flight_trunk_yaw = env_f64("FLIGHT_TRUNK_YAW", 0.0).max(0.0);
+    // HOP_FEET_YAW_FROM=n (unset = off): FLIGHT_FEET_YAW and FLIGHT_TRUNK_YAW
+    // only from jump n of a JUMP_REPEAT on. Measured 2026-11-16 (one-leg
+    // hops, HL01, 5 sets): the stance foot's yaw at a re-arm predicts the
+    // next hop's fall (jump 3: +0.26 fell vs +0.06 stood); most of it comes
+    // from the first flight (+0.13 while the pelvis untwists), and holding
+    // it there twists the first landing (HYL01, 7 first-hop falls).
+    let hop_yaw_from = std::env::var("HOP_FEET_YAW_FROM").ok().map(|s| s.parse::<usize>().expect("HOP_FEET_YAW_FROM"));
     let mut trunk_yaw0 = 0.0_f64;
     // STANCE_TRUNK_YAW=w (0 = off): on the ground from the first touchdown
     // on, a yaw-only pelvis task (weight w) toward the mean yaw of the two
@@ -957,6 +964,21 @@ fn main() {
     // hip strategy that is all that is left.
     let hop_mom_land_w = std::env::var("HOP_MOM_LAND_W").ok().map(|s| s.parse::<f64>().expect("HOP_MOM_LAND_W"));
     let hop_mom_land_t = env_f64("HOP_MOM_LAND_T", 2.0);
+    // HOP_COP_CENTRE=k (1/s, unset/0 = off; with HOP_LEG): on the one stance
+    // foot (not in the push, not in the first HOP_COP_T0 s after a
+    // touchdown), move the CoM reference across the sole at k times the
+    // stance CoP's lateral offset from the sole's centre, the other way;
+    // the offset (clamped to HOP_COP_MAX m) carries over from hop to hop.
+    // Measured 2026-11-16 (HL01, 5 sets): from the second hop on the CoP
+    // sits on the sole's outer edge in the crouch (+2.7 cm, the scuffing
+    // free foot carrying load inward) and the foot rolls out 0.08 rad;
+    // plants lighter than the model fall out of it (112/175 against
+    // 223/225). A fixed HOP_COM_DY 0.01 rescues the light ones (151) and
+    // tips the heavy ones inward (194).
+    let hop_cop_k = if hop_leg.is_some() { env_f64("HOP_COP_CENTRE", 0.0).max(0.0) } else { 0.0 };
+    let hop_cop_t0 = env_f64("HOP_COP_T0", 0.3);
+    let hop_cop_max = env_f64("HOP_COP_MAX", 0.03);
+    let mut hop_cop_off = na::Vector2::<f64>::zeros();
     let hop_trunk_yaw = if hop_leg.is_some() { env_f64("HOP_TRUNK_YAW", 0.0).max(0.0) } else { 0.0 };
     let hop_t_lift = hop_shift_t0 + hop_shift_t;
     let hop_foot_com = flag("HOP_FOOT_COM", false);
@@ -1190,6 +1212,8 @@ fn main() {
 
     for tick in 0..n_ticks {
         let t = tick as f64 * dt;
+        let (flight_feet_yaw, flight_trunk_yaw) =
+            if hop_yaw_from.is_some_and(|n| repeats_done + 1 < n) { (false, 0.0) } else { (flight_feet_yaw, flight_trunk_yaw) };
         let st = rig.sync();
         let (q, v, v_dvec, data) = (&st.q, &st.v, &st.v_dvec, &st.data);
         let com = st.com;
@@ -1465,7 +1489,14 @@ fn main() {
                 stand_z = stand_z0 + ground_dz;
                 println!("  [ground] t={t:.3} re-arm on {ground_dz:+.4} m above the start");
             }
-            let r = diag_com_cmd.map_or(com, |(c, _)| c);
+            let mut r = diag_com_cmd.map_or(com, |(c, _)| c);
+            if hop_cop_k > 0.0 {
+                // the commanded reference carries HOP_COP_CENTRE's offset,
+                // which is added again on top of the base
+                r.x -= hop_cop_off.x;
+                r.y -= hop_cop_off.y;
+                println!("  [hop-cop] t={t:.3} offset ({:+.4},{:+.4})", hop_cop_off.x, hop_cop_off.y);
+            }
             com_ref = Some(na::Vector3::new(r.x, r.y, stand_z));
             let sole = |k: usize| {
                 let o = misarta::se3::translation(&data.oMi[feet[k]]);
@@ -2150,6 +2181,24 @@ fn main() {
                 cd_ref.y = com_vel.y;
                 cdd_ref.x = w2 * (com.x - p_st.x);
                 cdd_ref.y = w2 * (com.y - p_st.y);
+            }
+            if hop_cop_k > 0.0 && let (Some(sl), Some(fr)) = (hop_leg, hop_free) && !flight {
+                let pushing = jump_v > 0.0 && t >= t_launch + jump_t_crouch + jump_t_hold && push_end.is_none();
+                let settled = touchdown_t.is_none_or(|t0| t - t0 >= hop_cop_t0);
+                let m = misarta::se3::rotation_matrix(&data.oMi[feet[sl]]);
+                let side = na::Vector2::new(m[(0, 1)], m[(1, 1)]);
+                if !pushing && settled && in_contact[sl] && !in_contact[fr] && measured.cop[sl][2] > f_on {
+                    hop_cop_off -= side * (hop_cop_k * measured.cop[sl][1] * dt);
+                    let n = hop_cop_off.norm();
+                    if n > hop_cop_max {
+                        hop_cop_off *= hop_cop_max / n;
+                    }
+                }
+                // eased in over HOP_COP_T0 after a touchdown (the landing
+                // reference starts at the touchdown CoM)
+                let a = touchdown_t.map_or(1.0, |t0| ((t - t0) / hop_cop_t0).clamp(0.0, 1.0));
+                c_ref.x += a * hop_cop_off.x;
+                c_ref.y += a * hop_cop_off.y;
             }
             let a_com = cdd_ref + kd_com * (cd_ref - com_vel) + kp_com * (c_ref - com);
             // HOP_KP/KD_COM_Y (with HOP_LEG; default = KP/KD_COM): the CoM's
