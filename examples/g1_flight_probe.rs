@@ -899,6 +899,7 @@ fn main() {
     // Off = bit-identical.
     let foot_reseat = flag("FOOT_RESEAT", false);
     let jump_mom_x_w = env_f64("JUMP_MOM_X_W", 0.0).max(0.0);
+    let hop_mom_z_w = env_f64("HOP_MOM_Z_W", 0.0).max(0.0);
     let jump_fz_sym_w = env_f64("JUMP_FZ_SYM_W", 0.0).max(0.0);
     let foot_reseat_w = env_f64("FOOT_RESEAT_W", 1.0);
     let mut reseat_xy: [Option<na::Vector2<f64>>; 2] = [None, None];
@@ -928,9 +929,20 @@ fn main() {
     let hop_foot_w = env_f64("HOP_FOOT_W", 1.0);
     let kp_hop = env_f64("KP_HOP_FOOT", 400.0);
     let kd_hop = env_f64("KD_HOP_FOOT", 40.0);
+    // KP_HOP_FOOT_Z: the lifted foot's height gain alone (unset = KP_HOP_FOOT).
+    // Measured 2026-11-15 (JUMP_REPEAT): at HOP_FOOT_W 0.03 the foot follows
+    // the posture down in the crouch and rests on the floor; in a repeated
+    // hop it scuffs (fz ~40 N) and rolls the stance sole onto its edge.
+    let kp_hop_z = env_f64("KP_HOP_FOOT_Z", kp_hop);
     let hop_t_lift = hop_shift_t0 + hop_shift_t;
     let hop_foot_com = flag("HOP_FOOT_COM", false);
     let hop_flight_y = flag("HOP_FLIGHT_Y", false);
+    // HOP_FLIGHT_Y_CAPTURE: the lateral capture gain of HOP_FLIGHT_Y (unset
+    // = FLIGHT_FEET_CAPTURE). Measured 2026-11-15 (JUMP_REPEAT): at 0.55 a
+    // hop that lands with vy 0.2 m/s puts the sole 2.4 cm past the CoM where
+    // 5 cm was needed; the CoP sits on the sole's edge and the CoM walks
+    // over it in ~1 s.
+    let hop_flight_y_capture = env_f64("HOP_FLIGHT_Y_CAPTURE", flight_feet_capture);
     let hop_land_ref = std::env::var("HOP_LAND_REF").ok().and_then(|s| s.parse::<f64>().ok());
     let mut hop_rel_com: Option<na::Vector3<f64>> = None;
     let hop_kp_com_y = env_f64("HOP_KP_COM_Y", env_f64("KP_COM", 300.0));
@@ -1290,6 +1302,8 @@ fn main() {
             in_contact[fr] = false;
             flip_count[fr] = 0;
         }
+        // a one-leg hop (HOP_LEG) re-arms on the stance foot alone
+        let rearm_contact = match hop_leg { Some(sl) => in_contact[sl], None => in_contact[0] && in_contact[1] };
         if jump_repeat > 0 {
             let (fl, fr) = (measured.cop[0][2].max(0.0), measured.cop[1][2].max(0.0));
             if fl + fr > 0.5 * weight {
@@ -1309,7 +1323,7 @@ fn main() {
         }
         if let Some(tgt) = jump_turn_target
             && !turn_reached
-            && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
+            && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && rearm_contact
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
             && let Some((y_last, done)) = turn_feet
@@ -1328,7 +1342,7 @@ fn main() {
         }
         if let Some(tgt) = jump_fwd_target
             && (!fwd_reached || (fwd_lat_both && !plane_done))
-            && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
+            && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && rearm_contact
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
             && let Some(x0) = fwd_feet0
@@ -1363,7 +1377,7 @@ fn main() {
         }
         if let Some(tgt) = jump_lat_target
             && (!lat_reached || (fwd_lat_both && !plane_done))
-            && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
+            && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && rearm_contact
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
             && let Some(y0) = lat_feet0
@@ -1390,7 +1404,7 @@ fn main() {
         }
         if let (Some(_), Some((_, bh, _))) = (jump_box_gap, jump_box)
             && !fwd_reached
-            && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
+            && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && rearm_contact
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
         {
@@ -1410,7 +1424,7 @@ fn main() {
         if jump_repeat > repeats_done && !turn_reached
             && !(fwd_reached && (jump_lat_target.is_none() || lat_reached))
             && !(lat_reached && (jump_fwd_target.is_none() || fwd_reached))
-            && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
+            && jump_v > 0.0 && !air_sched && flight_t0.is_none() && rearm_contact
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
         {
@@ -1710,6 +1724,28 @@ fn main() {
                     grp[g] += cmm[(0, c)] * v[c];
                 }
                 println!("  [hx] lift-off h_x {h_x:+.3} | base {:+.3} Lleg {:+.3} Rleg {:+.3} waist {:+.3} arms {:+.3}", grp[0], grp[1], grp[2], grp[3], grp[4]);
+                if hop_leg.is_some() && flag("DIAG_HOP", false) {
+                    // the same split for h_z (the hop's lift-off yaw)
+                    let mut gz = [0.0_f64; 5];
+                    for c in 0..nv {
+                        let g = if c < 6 {
+                            0
+                        } else {
+                            let name = rig.actuated().iter().find(|&&(_, vi)| vi == c).map(|&(ji, _)| rig.robot.joints[ji].name.as_str()).unwrap_or("");
+                            if name.starts_with("left_") && (name.contains("hip") || name.contains("knee") || name.contains("ankle")) {
+                                1
+                            } else if name.starts_with("right_") && (name.contains("hip") || name.contains("knee") || name.contains("ankle")) {
+                                2
+                            } else if name.contains("waist") || name.contains("torso") {
+                                3
+                            } else {
+                                4
+                            }
+                        };
+                        gz[g] += cmm[(2, c)] * v[c];
+                    }
+                    println!("  [hz] lift-off h_z {:+.3} | base {:+.3} Lleg {:+.3} Rleg {:+.3} waist {:+.3} arms {:+.3}", gz.iter().sum::<f64>(), gz[0], gz[1], gz[2], gz[3], gz[4]);
+                }
                 for (ph, name) in ["crouch", "hold", "push", "release", "loaded"].iter().enumerate() {
                     let d = hx_at[ph + 1..].iter().find(|x| x.is_finite()).copied().unwrap_or(h_x) - hx_at[ph];
                     let m = &hx_int[ph];
@@ -2280,6 +2316,18 @@ fn main() {
                 levels.push(tk);
                 names.push("momentum roll");
             }
+            // HOP_MOM_Z_W (with HOP_LEG): during the push only, a YAW-only
+            // momentum task toward 0 with this weight. Measured 2026-11-15:
+            // a hop leaves with h_z +-0.15 (the lifted leg swings 9 cm
+            // forward, +0.69), lands with the feet's yaw held
+            // (FLIGHT_FEET_YAW) and the low-friction members slip on the
+            // landing twist.
+            if hop_leg.is_some() && hop_mom_z_w > 0.0 && in_push_now
+                && let Some(tk) = bt::angular_momentum(dyn_ctx.qddot(), &cmm, &dcmm_v, &h_now, &[0.0; 3], &[0.0; 3], kp_mom, [false, false, true], nv)
+            {
+                levels.push(tk);
+                names.push("momentum yaw");
+            }
         }
         // JUMP_FZ_SYM_W: during the push only, with both feet in contact,
         // ask for equal vertical forces on the two feet (fz_L - fz_R = 0,
@@ -2333,7 +2381,7 @@ fn main() {
                 let h = (stand_z - (fz_stand[0].min(fz_stand[1]) - prof.sole_below_origin)).max(0.3);
                 let b = ((t - t0f) / flight_feet_capture_t).clamp(0.0, 1.0);
                 let b = b * b * (3.0 - 2.0 * b);
-                let tgt = flight_feet_capture * com_vel.y / (G / h).sqrt() + if sl == 0 { hop_com_dy } else { -hop_com_dy };
+                let tgt = hop_flight_y_capture * com_vel.y / (G / h).sqrt() + if sl == 0 { hop_com_dy } else { -hop_com_dy };
                 let d = (tgt - off[sl].y) * b;
                 for o in off.iter_mut() {
                     o.y += d;
@@ -2507,7 +2555,7 @@ fn main() {
             let omega = na::Vector3::new(w3[0], w3[1], w3[2]);
             levels.push(bt::swing_with_pose(
                 dyn_ctx.qddot(), &jf, &djv, &pos, &vel, &tgt, &tgt_v,
-                kp_hop, kp_hop, kd_hop, bt::SwingAxes::XyzRollPitch,
+                kp_hop, kp_hop_z, kd_hop, bt::SwingAxes::XyzRollPitch,
                 Some((rot, rot_tgt, omega, kp_ffr, kd_ffr)),
             ));
             names.push("hop foot");
@@ -2573,6 +2621,7 @@ fn main() {
                     "reseat" => foot_reseat_w,
                     "hop foot" => hop_foot_w,
                     "momentum roll" => jump_mom_x_w,
+                    "momentum yaw" => hop_mom_z_w,
                     "fz sym" => jump_fz_sym_w,
                     // WBCW_MOMENTUM_PUSH: the momentum weight during the push
                     // and the release only (default = WBCW_MOMENTUM).
@@ -2639,10 +2688,11 @@ fn main() {
                     .map_or("?".into(), |&(_, vi)| format!("{:+.0}/{:.0}", ex.tau[vi - 6], rig.torque_max[vi - 6]))
             };
             println!(
-                "  [hop] t={t:.3} nc={nc} {} com y {:+.4} ref {:+.4} vy {:+.3} ay cmd {:+.2} sol {:+.2} | z {:.3} vz {:+.3} az cmd {:+.2} sol {:+.2} | h_x {:+.3} roll {:+.3} | sole y {:+.4} roll {r:+.3} cop ({:+.3},{:+.3}) fz {:.0} | hip roll {} ankle roll {} ankle pitch {}",
+                "  [hop] t={t:.3} nc={nc} {} com y {:+.4} ref {:+.4} vy {:+.3} ay cmd {:+.2} sol {:+.2} | z {:.3} vz {:+.3} az cmd {:+.2} sol {:+.2} | h_x {:+.3} roll {:+.3} | sole y {:+.4} roll {r:+.3} cop ({:+.3},{:+.3}) fz {:.0} | hip roll {} ankle roll {} ankle pitch {} | free z {:+.3} tgt {:+.3}",
                 if flight { "AIR" } else if push_phase { "PSH" } else { "GND" },
                 com.y, cr.y, com_vel.y, ac.y, a_sol[1], com.z, com_vel.z, ac.z, a_sol[2], h[0], roll, o.y, measured.cop[sl][0], measured.cop[sl][1], measured.cop[sl][2],
-                tq("hip_roll"), tq("ankle_roll"), tq("ankle_pitch")
+                tq("hip_roll"), tq("ankle_roll"), tq("ankle_pitch"),
+                misarta::se3::translation(&data.oMi[feet[1 - sl]]).z, hop_rel.map_or(f64::NAN, |rel| o.z + rel.z)
             );
             let mut use_: Vec<(f64, String)> = rig
                 .actuated()
