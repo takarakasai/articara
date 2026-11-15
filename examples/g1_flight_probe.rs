@@ -227,6 +227,12 @@ fn main() {
     };
     let jump_vx = tab("JUMP_VX_TAB").map_or_else(|| env_f64("JUMP_VX", 0.0), |t| interp(&t, jump_v));
     let jump_lean = tab("JUMP_LEAN_TAB").map_or_else(|| env_f64("JUMP_LEAN", 0.0), |t| interp(&t, jump_v));
+    // JUMP_VY (m/s, + = left) and JUMP_LEAN_Y (m): the sideways take-off
+    // speed and the CoM's shift over the crouch, the lateral twins of JUMP_VX
+    // and JUMP_LEAN (the push line tilts by JUMP_VY / JUMP_V in y). In the
+    // heading frame when there is one. Both 0 (unset) = off, bit-identical.
+    let jump_vy = env_f64("JUMP_VY", 0.0);
+    let jump_lean_y = env_f64("JUMP_LEAN_Y", 0.0);
     // CROUCH_TAB ("V:depth,..."): CROUCH from JUMP_V the same way. Measured
     // 2026-11-07: at JUMP_V 1.0 the 0.18 m crouch makes a 0.31 s push; on
     // two feet the pelvis pitches back through it (-0.45 vs -0.26 rad) and
@@ -272,6 +278,31 @@ fn main() {
     }
     let jump_fwd_tol = env_f64("JUMP_FWD_TOL", 0.05);
     let mut fwd_reached = false;
+    // JUMP_LAT_TARGET (m, + = left, unset = off): the sideways twin of
+    // JUMP_FWD_TARGET: aim the soles' midpoint this far to the side of where
+    // it stood at T_LAUNCH. JUMP_VY is read backwards off JUMP_LAT_TAB
+    // ("V|vy:dy,...;V|..."; the soles' sideways move one jump makes against
+    // JUMP_VY, interpolated in JUMP_V), and with JUMP_REPEAT the jumps go on
+    // until, at a re-arm, the soles are within JUMP_LAT_TOL m (default 0.05)
+    // of the target. Measured 2026-11-15 (jb102-104, on TB6's tables times
+    // 0.25): one jump moves the soles +-0.14 m at JUMP_VY +-0.6 and stands
+    // 15-16 of 16; from 0.8 the push ends on the trailing foot alone (vy
+    // 0.82 against 0.33) and lands on one sliding foot.
+    let jump_lat_target = std::env::var("JUMP_LAT_TARGET").ok().map(|s| s.trim().parse::<f64>().unwrap());
+    let jump_lat_tab = vtab("JUMP_LAT_TAB");
+    let lat_vy_for = |dy: f64| -> f64 {
+        let tab = jump_lat_tab.as_ref().expect("JUMP_LAT_TARGET needs JUMP_LAT_TAB");
+        let ss: Vec<(f64, f64)> = tab.iter().map(|(tv, pts)| (*tv, inv_pw(pts, dy))).collect();
+        interp(&ss, jump_v)
+    };
+    let jump_lat_tol = env_f64("JUMP_LAT_TOL", 0.05);
+    let mut jvy = jump_lat_target.map_or(jump_vy, lat_vy_for);
+    if let Some(dy) = jump_lat_target {
+        println!("jump lateral target {dy:+.3} m: JUMP_VY {jvy:+.3}");
+    }
+    let mut lat_reached = false;
+    let jump_lat = jump_vy != 0.0 || jump_lean_y != 0.0 || jump_lat_target.is_some();
+    let (mut lat_feet0, mut lat_feet_last): (Option<f64>, f64) = (None, 0.0);
     // JUMP_BOX_GAP=g (m, unset = off; needs JUMP_BOX, JUMP_FWD_TAB and
     // JUMP_REPEAT): hop on the flat (scale read off JUMP_FWD_TAB) until the
     // gap from the front toe (sole centre + SOLE_HALF_L) to the box's front
@@ -1086,6 +1117,13 @@ fn main() {
             fwd_x0.get_or_insert(com.x);
         }
         fwd_last_x = com.x;
+        if jump_lat {
+            let y = soles_mid_y(&st.data.oMi, &feet, prof.sole_centre_x);
+            lat_feet_last = y;
+            if t >= t_launch {
+                lat_feet0.get_or_insert(y);
+            }
+        }
         if diag_fwd_feet {
             let x = soles_mid_x(&st.data.oMi, &feet, prof.sole_centre_x);
             fwd_feet_last = x;
@@ -1255,6 +1293,23 @@ fn main() {
                 println!("  [fwd-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: scale {fwd_s:.4}");
             }
         }
+        if let Some(tgt) = jump_lat_target
+            && !lat_reached
+            && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
+            && let Some((tl, _, _)) = land
+            && t - tl >= jump_repeat_after
+            && let Some(y0) = lat_feet0
+        {
+            let done = soles_mid_y(&data.oMi, &feet, prof.sole_centre_x) - y0;
+            let rem = tgt - done;
+            if rem.abs() < jump_lat_tol {
+                lat_reached = true;
+                println!("  [lat-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: no more jumps");
+            } else {
+                jvy = lat_vy_for(rem);
+                println!("  [lat-target] t={t:.3} moved {done:+.3} m, {rem:+.3} to go: JUMP_VY {jvy:+.3}");
+            }
+        }
         if let (Some(_), Some((_, bh, _))) = (jump_box_gap, jump_box)
             && !fwd_reached
             && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
@@ -1274,7 +1329,7 @@ fn main() {
                 println!("  [box-gap] t={t:.3} toe to box {gap:+.3} m: scale {fwd_s:.4}");
             }
         }
-        if jump_repeat > repeats_done && !turn_reached && !fwd_reached && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
+        if jump_repeat > repeats_done && !turn_reached && !fwd_reached && !lat_reached && jump_v > 0.0 && !air_sched && flight_t0.is_none() && in_contact[0] && in_contact[1]
             && let Some((tl, _, _)) = land
             && t - tl >= jump_repeat_after
         {
@@ -1726,7 +1781,9 @@ fn main() {
                     }
                     let lean_x = jlean * fwd_s + rearm_shift.x;
                     let (mut x, mut vx, mut ax) = quintic(0.0, 0.0, lean_x, jump_t_crouch, s);
-                    let (y, vy, ay) = quintic(0.0, 0.0, rearm_shift.y, jump_t_crouch, s);
+                    let lean_y = jump_lean_y + rearm_shift.y;
+                    let (mut y, mut vy, mut ay) = quintic(0.0, 0.0, lean_y, jump_t_crouch, s);
+                    let ky = jvy / jv;
                     let kx = jvx * fwd_s / jv;
                     let s_push = s - jump_t_crouch - jump_t_hold;
                     if jump_repeat > 0 && s_push > 0.0 && s_push <= dt + 1e-9 {
@@ -1766,6 +1823,11 @@ fn main() {
                         x += kx * (z - z_low);
                         vx += kx * vz;
                         ax += kx * az;
+                        if jump_lat {
+                            y += ky * (z - z_low);
+                            vy += ky * vz;
+                            ay += ky * az;
+                        }
                         if s_push >= t_push && jump_release {
                             let (t0, z0, v0) = *release_t0.get_or_insert((t, z, vz));
                             let sr = t - t0;
@@ -1775,6 +1837,11 @@ fn main() {
                             x = lean_x + kx * (z0 - z_low) + kx * v0 * sr;
                             vx = kx * v0;
                             ax = 0.0;
+                            if jump_lat {
+                                y = lean_y + ky * (z0 - z_low) + ky * v0 * sr;
+                                vy = ky * v0;
+                                ay = 0.0;
+                            }
                             let unloaded = measured.cop[0][2] <= f_on && measured.cop[1][2] <= f_on;
                             let one_off = release_first_off && !unloaded && (measured.cop[0][2] <= f_on || measured.cop[1][2] <= f_on);
                             if one_off {
@@ -2585,6 +2652,13 @@ fn main() {
             fwd_lo_vx.unwrap_or(f64::NAN), fwd_td_x.map_or(f64::NAN, |x| x - x0), fwd_last_x - x0
         );
     }
+    if let Some(y0) = lat_feet0 {
+        let d = lat_feet_last - y0;
+        match jump_lat_target {
+            Some(tgt) => println!("  lateral target {tgt:+.3} m (last JUMP_VY {jvy:+.3}): soles moved {d:+.3} m at the end (error {:+.3}), {} jumps, reached {lat_reached}", d - tgt, repeats_done + 1),
+            None => println!("  lateral: soles moved {d:+.3} m at the end, {} jumps", repeats_done + 1),
+        }
+    }
     if let Some(x0) = fwd_feet0 {
         let d = fwd_feet_last - x0;
         match jump_fwd_target {
@@ -2823,6 +2897,15 @@ fn plan_push(
 /// The soles' mean yaw (rad), from the feet frames.
 #[cfg(feature = "mujoco")]
 /// x of the soles' midpoint (sole centres).
+fn soles_mid_y(o_mi: &[misarta::se3::SE3<f64>], feet: &[usize; 2], sole_centre_x: f64) -> f64 {
+    let sole = |k: usize| {
+        let o = misarta::se3::translation(&o_mi[feet[k]]);
+        let m = misarta::se3::rotation_matrix(&o_mi[feet[k]]);
+        o[1] + m[(1, 0)] * sole_centre_x
+    };
+    0.5 * (sole(0) + sole(1))
+}
+
 fn soles_mid_x(o_mi: &[misarta::se3::SE3<f64>], feet: &[usize; 2], sole_centre_x: f64) -> f64 {
     let sole = |k: usize| {
         let o = misarta::se3::translation(&o_mi[feet[k]]);
