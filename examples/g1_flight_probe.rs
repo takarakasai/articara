@@ -933,6 +933,18 @@ fn main() {
     let hop_lift_t = env_f64("HOP_LIFT_T", 0.5);
     let hop_lift_h = env_f64("HOP_LIFT_H", 0.08);
     let hop_com_dy = env_f64("HOP_COM_DY", 0.0);
+    // HOP_CROUCH_DY (m, with HOP_LEG, unset = 0): in the crouch and push of
+    // every re-armed hop (not the first, not the landing or flight), the CoM
+    // reference moves this far toward the free side (laid out with the
+    // crouch like JUMP_LEAN_Y). Measured 2026-11-16 (HL01, 5 sets): the free
+    // foot rests on the floor through the crouch (~30 N, 22 cm inward,
+    // unmodelled), the effective CoP sits ~2 cm inward of the stance sole's
+    // centre and the stance CoP pins on its outer edge; the first crouch has
+    // the CoM 1.4 cm inward and holds, the re-armed ones start at the sole's
+    // centre and drift out (plants lighter than the model launch outward).
+    // HOP_COM_DY 0.01 fixes the crouch for every mass but also places the
+    // landing foot and the landing reference, and the falls move there.
+    let hop_crouch_dy = env_f64("HOP_CROUCH_DY", 0.0);
     let hop_foot_w = env_f64("HOP_FOOT_W", 1.0);
     let kp_hop = env_f64("KP_HOP_FOOT", 400.0);
     let kd_hop = env_f64("KD_HOP_FOOT", 40.0);
@@ -1046,6 +1058,7 @@ fn main() {
     // flight feet's capture are laid out in that heading. Measured
     // 2026-11-03: the feet stand turned 0.1-0.3 rad after a landing, and a
     // world-x push left the second jump with |h_x| 1.2-1.5 (first: ~0.05).
+    // With HOP_LEG the heading is the stance sole's yaw alone.
     let jump_repeat_heading = flag("JUMP_REPEAT_HEADING", false);
     let mut heading: Option<f64> = None;
     // JUMP_TURN_HZ (kg m^2/s, 0 = off): a turning jump. Through the push the
@@ -1511,7 +1524,13 @@ fn main() {
                 repeats_done + 1, jump_repeat + 1, com.x, com.y, com.z, r.x, r.y, com_vel.x, com_vel.z, s0.x, s0.y, s1.x, s1.y, com.x - mid.x, com.y - mid.y
             );
             if jump_repeat_heading {
-                let (sy, cy) = (y0.sin() + y1.sin(), y0.cos() + y1.cos());
+                // a one-leg hop (HOP_LEG) goes along the stance sole alone:
+                // the lifted foot's yaw is free (0.2-0.3 rad off by the
+                // third hop, HOP_CROUCH_DY 0.02)
+                let (sy, cy) = match hop_leg {
+                    Some(sl) => { let y = if sl == 0 { y0 } else { y1 }; (y.sin(), y.cos()) }
+                    None => (y0.sin() + y1.sin(), y0.cos() + y1.cos()),
+                };
                 heading = Some(sy.atan2(cy));
                 println!("  [heading] {:+.3} rad", sy.atan2(cy));
             }
@@ -1992,7 +2011,10 @@ fn main() {
                     }
                     let lean_x = jlean * fwd_s + rearm_shift.x;
                     let (mut x, mut vx, mut ax) = quintic(0.0, 0.0, lean_x, jump_t_crouch, s);
-                    let lean_y = jump_lean_y + rearm_shift.y;
+                    let mut lean_y = jump_lean_y + rearm_shift.y;
+                    if hop_crouch_dy != 0.0 && repeats_done > 0 && let Some(sl) = hop_leg {
+                        lean_y += if sl == 0 { -hop_crouch_dy } else { hop_crouch_dy };
+                    }
                     let (mut y, mut vy, mut ay) = quintic(0.0, 0.0, lean_y, jump_t_crouch, s);
                     let ky = jvy / jv;
                     let kx = jvx * fwd_s / jv;
