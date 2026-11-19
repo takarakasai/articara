@@ -922,12 +922,12 @@ fn main() {
     // outside flight (in flight the flight-feet task holds it). The free
     // foot's lost load never counts as a release (RELEASE_FIRST_OFF). Set
     // T_LAUNCH after the lift. Off = bit-identical.
-    let hop_leg: Option<usize> = std::env::var("HOP_LEG").ok().map(|s| match s.as_str() {
+    let mut hop_leg: Option<usize> = std::env::var("HOP_LEG").ok().map(|s| match s.as_str() {
         "L" | "l" => 0,
         "R" | "r" => 1,
         _ => panic!("HOP_LEG must be L or R"),
     });
-    let hop_free = hop_leg.map(|s| 1 - s);
+    let mut hop_free = hop_leg.map(|s| 1 - s);
     let hop_shift_t0 = env_f64("HOP_SHIFT_T0", 0.3);
     let hop_shift_t = env_f64("HOP_SHIFT_T", 1.0);
     let hop_lift_t = env_f64("HOP_LIFT_T", 0.5);
@@ -1008,6 +1008,20 @@ fn main() {
     // 5 cm was needed; the CoP sits on the sole's edge and the CoM walks
     // over it in ~1 s.
     let hop_flight_y_capture = env_f64("HOP_FLIGHT_Y_CAPTURE", flight_feet_capture);
+    // HOP_ALT=1 (with HOP_LEG): alternate the legs, the first step toward
+    // running. At every lift-off the lifted foot becomes the stance foot:
+    // in flight it comes down to the old stance foot's lift-off height and
+    // the old stance foot goes HOP_LIFT_H up (over FLIGHT_FEET_CAPTURE_T);
+    // after the touchdown the new lifted foot is held where it is relative
+    // to the new stance foot. HOP_ALT_VY (m/s): lateral lift-off speed
+    // toward the lifted foot (the push line tilts as with JUMP_VY).
+    // HOP_ALT_LEAN_Y (m): the CoM's shift toward the lifted foot over every
+    // crouch, the first one too. Off = bit-identical.
+    let hop_alt = hop_leg.is_some() && flag("HOP_ALT", false);
+    let hop_alt_vy = env_f64("HOP_ALT_VY", 0.0);
+    let hop_alt_lean_y = env_f64("HOP_ALT_LEAN_Y", 0.0);
+    let mut hop_alt_z: Option<[f64; 2]> = None; // flight targets of the feet's z offsets from the CoM
+    let mut hop_alt_rel_pending = false;
     let hop_land_ref = std::env::var("HOP_LAND_REF").ok().and_then(|s| s.parse::<f64>().ok());
     let mut hop_rel_com: Option<na::Vector3<f64>> = None;
     let hop_kp_com_y = env_f64("HOP_KP_COM_Y", env_f64("KP_COM", 300.0));
@@ -1642,6 +1656,20 @@ fn main() {
                 lift_off_hy = h[1];
                 let (r, pch, _) = st.body_quat.euler_angles();
                 println!("  [lift-off] t={t:.3} com ({:+.3}, z {:.4}) v ({:+.3}, {:+.3}), foot x {:?} z {:?}, h_ang ({:+.3},{:+.3},{:+.3}), roll {r:+.3} pitch {pch:+.3}", com.x, com.z, com_vel.x, com_vel.z, fx, fz, h[0], h[1], h[2]);
+                if hop_alt && let (Some(sl), Some(fr), Some(off)) = (hop_leg, hop_free, feet_off) {
+                    let mut zt = [0.0; 2];
+                    zt[fr] = off[sl].z;
+                    zt[sl] = off[sl].z + hop_lift_h;
+                    hop_alt_z = Some(zt);
+                    hop_leg = Some(fr);
+                    hop_free = Some(sl);
+                    hop_p0 = None;
+                    hop_rel = None;
+                    hop_rel_com = None;
+                    hop_alt_rel_pending = true;
+                    let fy: Vec<String> = (0..2).map(|k| format!("{:+.3}", misarta::se3::translation(&data.oMi[feet[k]]).y)).collect();
+                    println!("  [hop-alt] t={t:.3} stance {} -> {}, com y {:+.3} vy {:+.3}, foot y {:?}", if sl == 0 { "L" } else { "R" }, if fr == 0 { "L" } else { "R" }, com.y, com_vel.y, fy);
+                }
             }
             (false, Some(t0)) => {
                 flight_spans.push((t0, t));
@@ -2015,8 +2043,14 @@ fn main() {
                     if hop_crouch_dy != 0.0 && repeats_done > 0 && let Some(sl) = hop_leg {
                         lean_y += if sl == 0 { -hop_crouch_dy } else { hop_crouch_dy };
                     }
+                    // HOP_ALT: toward the lifted foot (+y for the left one)
+                    let alt_sign = match hop_leg { Some(0) => -1.0, _ => 1.0 };
+                    if hop_alt {
+                        lean_y += alt_sign * hop_alt_lean_y;
+                    }
                     let (mut y, mut vy, mut ay) = quintic(0.0, 0.0, lean_y, jump_t_crouch, s);
-                    let ky = jvy / jv;
+                    let ky = if hop_alt { alt_sign * hop_alt_vy / jv } else { jvy / jv };
+                    let jump_lat = jump_lat || hop_alt;
                     let kx = jvx * fwd_s / jv;
                     let s_push = s - jump_t_crouch - jump_t_hold;
                     if jump_repeat > 0 && s_push > 0.0 && s_push <= dt + 1e-9 {
@@ -2496,6 +2530,13 @@ fn main() {
                     o.y += d;
                 }
             }
+            if let (Some(zt), Some(t0f)) = (hop_alt_z, flight_t0) {
+                let b = ((t - t0f) / flight_feet_capture_t).clamp(0.0, 1.0);
+                let b = b * b * (3.0 - 2.0 * b);
+                for (k, o) in off.iter_mut().enumerate() {
+                    o.z += (zt[k] - o.z) * b;
+                }
+            }
             if flight_feet_width > 0.0 && let Some(t0f) = flight_t0 {
                 let b = ((t - t0f) / flight_feet_capture_t).clamp(0.0, 1.0);
                 let b = b * b * (3.0 - 2.0 * b);
@@ -2636,8 +2677,16 @@ fn main() {
             let pos = misarta::se3::translation(&data.oMi[feet[fr]]);
             let vel3 = &jf.rows(3, 3).into_owned() * v_dvec;
             let vel = na::Vector3::new(vel3[0], vel3[1], vel3[2]);
-            let p0 = *hop_p0.get_or_insert(pos);
             let p_st = misarta::se3::translation(&data.oMi[feet[sl]]);
+            if hop_alt_rel_pending {
+                // HOP_ALT: the old stance foot, lifted in flight, is held
+                // where it touched down relative to the new stance foot
+                hop_alt_rel_pending = false;
+                hop_p0 = Some(pos);
+                hop_rel = Some(pos - p_st);
+                println!("  [hop-alt-free] t={t:.3} free foot {} at ({:+.3},{:+.3},{:+.3}), rel ({:+.3},{:+.3},{:+.3})", if fr == 0 { "L" } else { "R" }, pos.x, pos.y, pos.z, pos.x - p_st.x, pos.y - p_st.y, pos.z - p_st.z);
+            }
+            let p0 = *hop_p0.get_or_insert(pos);
             let s = t - hop_t_lift;
             let hop_in_push = hop_push_pelvis && jump_v > 0.0 && push_end.is_none() && t >= t_launch + jump_t_crouch + jump_t_hold;
             if !hop_in_push {
