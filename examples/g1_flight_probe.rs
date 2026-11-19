@@ -1016,8 +1016,14 @@ fn main() {
     // to the new stance foot. HOP_ALT_VY (m/s): lateral lift-off speed
     // toward the lifted foot (the push line tilts as with JUMP_VY).
     // HOP_ALT_LEAN_Y (m): the CoM's shift toward the lifted foot over every
-    // crouch, the first one too. Off = bit-identical.
+    // crouch, the first one too. HOP_ALT_W (m, 0 = off): in flight, carry
+    // the lifted foot to this far beside the new stance foot (same x)
+    // instead of keeping its lift-off offset. Measured 2026-11-19: the
+    // lifted foot swings ~15 cm ahead in the push, the stance foot's x
+    // capture then took it 15 cm behind, and the second landing put the
+    // feet 8 cm apart. Off = bit-identical.
     let hop_alt = hop_leg.is_some() && flag("HOP_ALT", false);
+    let hop_alt_w = env_f64("HOP_ALT_W", 0.0);
     let hop_alt_vy = env_f64("HOP_ALT_VY", 0.0);
     let hop_alt_lean_y = env_f64("HOP_ALT_LEAN_Y", 0.0);
     let mut hop_alt_z: Option<[f64; 2]> = None; // flight targets of the feet's z offsets from the CoM
@@ -2535,6 +2541,12 @@ fn main() {
                 let b = b * b * (3.0 - 2.0 * b);
                 for (k, o) in off.iter_mut().enumerate() {
                     o.z += (zt[k] - o.z) * b;
+                }
+                if hop_alt_w > 0.0 && let (Some(sl), Some(fr)) = (hop_leg, hop_free) {
+                    // HOP_ALT_W: the lifted foot beside the new stance foot
+                    let y = off[sl].y + if fr == 0 { hop_alt_w } else { -hop_alt_w };
+                    off[fr].x += (off[sl].x - off[fr].x) * b;
+                    off[fr].y += (y - off[fr].y) * b;
                 }
             }
             if flight_feet_width > 0.0 && let Some(t0f) = flight_t0 {
