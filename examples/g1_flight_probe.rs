@@ -1021,7 +1021,8 @@ fn main() {
     // instead of keeping its lift-off offset. Measured 2026-11-19: the
     // lifted foot swings ~15 cm ahead in the push, the stance foot's x
     // capture then took it 15 cm behind, and the second landing put the
-    // feet 8 cm apart. Off = bit-identical.
+    // feet 8 cm apart. The first lift (HOP_LIFT_T) also brings the lifted
+    // foot to this width. Off = bit-identical.
     let hop_alt = hop_leg.is_some() && flag("HOP_ALT", false);
     let hop_alt_w = env_f64("HOP_ALT_W", 0.0);
     let hop_alt_vy = env_f64("HOP_ALT_VY", 0.0);
@@ -2700,6 +2701,7 @@ fn main() {
             }
             let p0 = *hop_p0.get_or_insert(pos);
             let s = t - hop_t_lift;
+            let hop_alt_dy = if hop_alt && hop_alt_w > 0.0 { p_st.y + if fr == 0 { hop_alt_w } else { -hop_alt_w } - p0.y } else { 0.0 };
             let hop_in_push = hop_push_pelvis && jump_v > 0.0 && push_end.is_none() && t >= t_launch + jump_t_crouch + jump_t_hold;
             if !hop_in_push {
                 hop_rel_pelvis = None;
@@ -2719,10 +2721,13 @@ fn main() {
                 (pp + r, v_p + w_p.cross(&r))
             } else if s < hop_lift_t && hop_rel.is_none() {
                 let (h, dh, _) = quintic(0.0, 0.0, hop_lift_h, hop_lift_t, s);
-                (p0 + na::Vector3::new(0.0, 0.0, h), na::Vector3::new(0.0, 0.0, dh))
+                // HOP_ALT_W: the first lift also brings the foot to that
+                // width beside the stance foot
+                let k = h / hop_lift_h;
+                (p0 + na::Vector3::new(0.0, k * hop_alt_dy, h), na::Vector3::new(0.0, dh / hop_lift_h * hop_alt_dy, dh))
             } else {
                 let rel = *hop_rel.get_or_insert_with(|| {
-                    let rel = p0 + na::Vector3::new(0.0, 0.0, hop_lift_h) - p_st;
+                    let rel = p0 + na::Vector3::new(0.0, hop_alt_dy, hop_lift_h) - p_st;
                     println!("  [hop-lifted] t={t:.3} free foot at ({:+.3},{:+.3},{:+.3}) (target rel ({:+.3},{:+.3},{:+.3})), com ({:+.3},{:+.3}) stance sole ({:+.3},{:+.3})", pos.x, pos.y, pos.z, rel.x, rel.y, rel.z, com.x, com.y, p_st.x + prof.sole_centre_x, p_st.y);
                     rel
                 });
