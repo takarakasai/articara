@@ -189,8 +189,8 @@ fn main() {
     let kp_mom = env_f64("KP_MOM", 20.0);
     let mom_w = env_f64("WBCW_MOMENTUM", 0.1);
     let mut crouch = env_f64("CROUCH", 0.12);
-    let jump_t_crouch = env_f64("JUMP_T_CROUCH", 0.8).max(0.05);
-    let jump_t_hold = env_f64("JUMP_T_HOLD", 0.3).max(0.0);
+    let mut jump_t_crouch = env_f64("JUMP_T_CROUCH", 0.8).max(0.05);
+    let mut jump_t_hold = env_f64("JUMP_T_HOLD", 0.3).max(0.0);
     let jump_z_to = env_f64("JUMP_Z_TO", 0.02);
     // JUMP_VX (m/s, 0 = off): a forward jump. The push runs along a line
     // tilted forward -- the CoM's x acceleration is JUMP_VX / JUMP_V times
@@ -1029,6 +1029,45 @@ fn main() {
     let hop_alt_lean_y = env_f64("HOP_ALT_LEAN_Y", 0.0);
     let mut hop_alt_z: Option<[f64; 2]> = None; // flight targets of the feet's z offsets from the CoM
     let mut hop_alt_rel_pending = false;
+    // HOP_RUN=1 (with HOP_ALT): alternate without stopping. After a real
+    // flight (>= 0.05 s) the next jump re-arms HOP_RUN_AFTER s after the
+    // touchdown, with its crouch (HOP_RUN_T_CROUCH, hold HOP_RUN_T_HOLD)
+    // starting from the CoM's velocity there (z and x: the dip absorbs the
+    // landing). The stance's lateral reference is planned at the re-arm:
+    // the LIPM along the dip and the push (omega^2 = (g + z'') / height,
+    // integrated), about one CoP held within HOP_RUN_COP of the stance sole
+    // centre and chosen to put the lift-off DCM HOP_RUN_XI toward the
+    // lifted foot; no lean, the push tilted by HOP_RUN_VY (default 0)
+    // instead of HOP_ALT_VY. In flight the new stance foot's sole centre
+    // goes HOP_RUN_DCM outward of the lateral capture point, at least
+    // HOP_RUN_MIN_W from where the old stance foot left, and to
+    // HOP_RUN_CAPTURE_X times the fore-aft one. Only the first flight after
+    // a push swaps the feet. Measured 2026-11-20: stopping on one foot after
+    // the lateral carry had a +-1 cm window that the friction moved (§55);
+    // the dip and the push grow a DCM offset ~13x over a 0.45 s stance, so
+    // the touchdown DCM must sit within about -1.4..+2.3 cm of the sole.
+    // Off = bit-identical.
+    let hop_run = hop_alt && flag("HOP_RUN", false);
+    let hop_run_dcm = env_f64("HOP_RUN_DCM", 0.02);
+    let hop_run_min_w = env_f64("HOP_RUN_MIN_W", 0.10);
+    let hop_run_vy = env_f64("HOP_RUN_VY", 0.0);
+    let hop_run_xi = env_f64("HOP_RUN_XI", 0.09);
+    let hop_run_t_crouch = env_f64("HOP_RUN_T_CROUCH", 0.25).max(0.05);
+    let hop_run_t_hold = env_f64("HOP_RUN_T_HOLD", 0.0).max(0.0);
+    // HOP_RUN_AFTER (s): re-arm this long after the touchdown. Measured
+    // 2026-11-20: from the touchdown velocity the impact took vz -1.13 ->
+    // -0.82 in 20 ms, the dip's PD asked -25 m/s^2 to catch the plan up and
+    // the stance foot's load fell 1273 -> 174 N.
+    let hop_run_after = env_f64("HOP_RUN_AFTER", 0.04).max(0.0);
+    // HOP_RUN_CAPTURE_X: the stance foot's fore-aft capture gain in flight
+    // (FLIGHT_FEET_CAPTURE otherwise). Measured 2026-11-20: at 0.55 the hops
+    // went on at a steady -0.36 m/s.
+    let hop_run_capture_x = env_f64("HOP_RUN_CAPTURE_X", 1.0);
+    let hop_run_cop = env_f64("HOP_RUN_COP", 0.02);
+    let mut hop_run_v0 = na::Vector3::<f64>::zeros(); // CoM velocity at the re-arm
+    let mut hop_run_p = 0.0_f64; // stance sole centre y at the re-arm
+    let mut hop_run_plan: Vec<(f64, f64, f64)> = vec![(0.0, 0.0, 0.0)]; // stance lateral plan per tick: y - y0, vy, ay
+    let mut hop_run_old_y: Option<f64> = None; // old stance foot y at the lift-off
     let hop_land_ref = std::env::var("HOP_LAND_REF").ok().and_then(|s| s.parse::<f64>().ok());
     let mut hop_rel_com: Option<na::Vector3<f64>> = None;
     let hop_kp_com_y = env_f64("HOP_KP_COM_Y", env_f64("KP_COM", 300.0));
@@ -1410,11 +1449,14 @@ fn main() {
             println!("  [yaw] t={t:.3} nc {} pelvis {py:+.3} feet {:+.3} {:+.3} h_z {hz:+.3} | min load share {min_share:.2}", (0..2).filter(|&k| in_contact[k]).count(), yaw(0), yaw(1));
             min_share = 1.0;
         }
+        // HOP_RUN: HOP_RUN_AFTER after a real flight (a 2 ms one in the
+        // crouch re-armed the jump)
+        let rearm_after = if hop_run && flight_spans.last().is_some_and(|&(a, b)| b - a >= 0.05) { hop_run_after } else { jump_repeat_after };
         if let Some(tgt) = jump_turn_target
             && !turn_reached
             && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && rearm_contact
             && let Some((tl, _, _)) = land
-            && t - tl >= jump_repeat_after
+            && t - tl >= rearm_after
             && let Some((y_last, done)) = turn_feet
         {
             let y = soles_mean_yaw(&data.oMi, &feet);
@@ -1433,7 +1475,7 @@ fn main() {
             && (!fwd_reached || (fwd_lat_both && !plane_done))
             && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && rearm_contact
             && let Some((tl, _, _)) = land
-            && t - tl >= jump_repeat_after
+            && t - tl >= rearm_after
             && let Some(x0) = fwd_feet0
         {
             let done = soles_mid_x(&data.oMi, &feet, prof.sole_centre_x) - x0;
@@ -1468,7 +1510,7 @@ fn main() {
             && (!lat_reached || (fwd_lat_both && !plane_done))
             && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && rearm_contact
             && let Some((tl, _, _)) = land
-            && t - tl >= jump_repeat_after
+            && t - tl >= rearm_after
             && let Some(y0) = lat_feet0
         {
             let done = soles_mid_y(&data.oMi, &feet, prof.sole_centre_x) - y0;
@@ -1495,7 +1537,7 @@ fn main() {
             && !fwd_reached
             && jump_repeat > repeats_done && jump_v > 0.0 && !air_sched && flight_t0.is_none() && rearm_contact
             && let Some((tl, _, _)) = land
-            && t - tl >= jump_repeat_after
+            && t - tl >= rearm_after
         {
             if ground_dz > 0.5 * bh {
                 fwd_reached = true;
@@ -1515,7 +1557,7 @@ fn main() {
             && !(lat_reached && (jump_fwd_target.is_none() || fwd_reached))
             && jump_v > 0.0 && !air_sched && flight_t0.is_none() && rearm_contact
             && let Some((tl, _, _)) = land
-            && t - tl >= jump_repeat_after
+            && t - tl >= rearm_after
         {
             repeats_done += 1;
             if land_ground_z && let Some(f0) = foot_stand_z {
@@ -1565,6 +1607,73 @@ fn main() {
                 println!("  [recentre] shift ({:+.3},{:+.3}) over the crouch", rearm_shift.x, rearm_shift.y);
             }
             crouch_z0 = Some(r.z);
+            if hop_run && let Some(sl) = hop_leg {
+                // the dip from the landing speed: a crouch from rest this
+                // short asks more than g down and the stance foot flickers off
+                jump_t_crouch = hop_run_t_crouch;
+                jump_t_hold = hop_run_t_hold;
+                hop_run_v0 = com_vel;
+                let ps = if sl == 0 { s0.y } else { s1.y };
+                // this stance's vertical plan (dip from the touchdown
+                // velocity, hold, push) and the lateral LIPM along it,
+                // y'' = (g + z'') / (z - floor) (y - p)
+                let z_low = stand_z - crouch;
+                let floor = foot_stand_z.map_or(0.0, |f| f[sl] + ground_dz) - prof.sole_below_origin;
+                let dzp = stand_z + jump_z_to - z_low;
+                let rr = jump_push_r;
+                let (t_push, a0) = if rr < 1.0 {
+                    let tp = 3.0 * dzp * (1.0 + rr) / ((2.0 + rr) * jv);
+                    (tp, 2.0 * jv / ((1.0 + rr) * tp))
+                } else {
+                    let a = jv * jv / (2.0 * dzp);
+                    (jv / a, a)
+                };
+                let kk = if rr < 1.0 { (1.0 - rr) / t_push } else { 0.0 };
+                let t_s = jump_t_crouch + jump_t_hold + t_push;
+                let n = (t_s / dt).ceil() as usize;
+                // basis solutions A (y 1, v 0) and B (y 0, v 1), and w^2
+                let mut basis = Vec::with_capacity(n + 1);
+                let (mut a, mut ad, mut b, mut bd) = (1.0, 0.0, 0.0, 1.0);
+                for i in 0..=n {
+                    let s = i as f64 * dt;
+                    let (z, az) = if s < jump_t_crouch {
+                        let (z, _, az) = quintic(r.z, com_vel.z, z_low, jump_t_crouch, s);
+                        (z, az)
+                    } else if s < jump_t_crouch + jump_t_hold {
+                        (z_low, 0.0)
+                    } else {
+                        let sp = (s - jump_t_crouch - jump_t_hold).min(t_push);
+                        (z_low + a0 * (0.5 * sp * sp - kk * sp.powi(3) / 6.0), a0 * (1.0 - kk * sp))
+                    };
+                    let w2 = (G + az).max(0.0) / (z - floor).max(0.3);
+                    basis.push((a, ad, b, bd, w2));
+                    ad += w2 * a * dt;
+                    a += ad * dt;
+                    bd += w2 * b * dt;
+                    b += bd * dt;
+                }
+                // the CoP that puts the lift-off DCM (nominal omega)
+                // HOP_RUN_XI toward the lifted foot, within the sole
+                let w0 = (G / (stand_z - floor).max(0.3)).sqrt();
+                let (ae, ade, be, bde, _) = basis[n];
+                let (ka, kb) = (ae + ade / w0, be + bde / w0);
+                let toward = if sl == 0 { -1.0 } else { 1.0 };
+                let (y0, v0) = (r.y, com_vel.y);
+                let p = ((ps + toward * hop_run_xi - ka * y0 - kb * v0) / (1.0 - ka)).clamp(ps - hop_run_cop, ps + hop_run_cop);
+                hop_run_p = ps;
+                hop_run_plan = basis
+                    .iter()
+                    .map(|&(a, ad, b, bd, w2)| {
+                        let y = p + a * (y0 - p) + b * v0;
+                        (y - y0, ad * (y0 - p) + bd * v0, w2 * (y - p))
+                    })
+                    .collect();
+                let &(ye, vye, _) = hop_run_plan.last().unwrap();
+                println!(
+                    "  [run] t={t:.3} re-arm on {}: com y - sole {:+.4} vy {:+.3} vz {:+.3} dcm - sole {:+.4} | stance {t_s:.3} s, cop - sole {:+.4}, plan lift-off y - sole {:+.4} vy {:+.3}",
+                    if sl == 0 { "L" } else { "R" }, y0 - ps, v0, com_vel.z, y0 + v0 / w0 - ps, p - ps, y0 + ye - ps, vye
+                );
+            }
             turn_yaw = [f64::NAN; 3];
             t_launch = t;
             push_end = None;
@@ -1663,7 +1772,15 @@ fn main() {
                 lift_off_hy = h[1];
                 let (r, pch, _) = st.body_quat.euler_angles();
                 println!("  [lift-off] t={t:.3} com ({:+.3}, z {:.4}) v ({:+.3}, {:+.3}), foot x {:?} z {:?}, h_ang ({:+.3},{:+.3},{:+.3}), roll {r:+.3} pitch {pch:+.3}", com.x, com.z, com_vel.x, com_vel.z, fx, fz, h[0], h[1], h[2]);
-                if hop_alt && let (Some(sl), Some(fr), Some(off)) = (hop_leg, hop_free, feet_off) {
+                // HOP_RUN: only the first flight after a push swaps (a bounce
+                // in the dip or a fall would swap the feet back)
+                let alt_swap = !hop_run || (touchdown_t.is_none() && t >= t_launch + jump_t_crouch + jump_t_hold);
+                if hop_alt && alt_swap && let (Some(sl), Some(fr), Some(off)) = (hop_leg, hop_free, feet_off) {
+                    if hop_run {
+                        hop_run_old_y = Some(misarta::se3::translation(&data.oMi[feet[sl]]).y);
+                        let (vy, h) = (com_vel.y, (stand_z - (fz_stand[0].min(fz_stand[1]) - prof.sole_below_origin)).max(0.3));
+                        println!("  [run] t={t:.3} lift-off {}: com y - sole {:+.4} vy {:+.3} dcm - sole {:+.4}", if sl == 0 { "L" } else { "R" }, com.y - hop_run_p, vy, com.y + vy / (G / h).sqrt() - hop_run_p);
+                    }
                     let mut zt = [0.0; 2];
                     zt[fr] = off[sl].z;
                     zt[sl] = off[sl].z + hop_lift_h;
@@ -2034,7 +2151,9 @@ fn main() {
                     // crouch, hold, push off
                     let z_low = stand_z - crouch;
                     let s = t - t_launch;
-                    let (mut z, mut vz, mut az) = quintic(crouch_z0.unwrap_or(stand_z), 0.0, z_low, jump_t_crouch, s);
+                    let run_now = hop_run && repeats_done > 0;
+                    let run_v0 = if run_now { hop_run_v0 } else { na::Vector3::zeros() };
+                    let (mut z, mut vz, mut az) = quintic(crouch_z0.unwrap_or(stand_z), run_v0.z, z_low, jump_t_crouch, s);
                     if jump_repeat_recentre_n >= 2 && repeats_done > 0 && heading.is_none() && let Some(off) = stand_off {
                         // live target: the shift from the soles' midpoint now
                         let sole = |k: usize| {
@@ -2045,7 +2164,7 @@ fn main() {
                         rearm_shift = 0.5 * (sole(0) + sole(1)) + off - c_ref.xy();
                     }
                     let lean_x = jlean * fwd_s + rearm_shift.x;
-                    let (mut x, mut vx, mut ax) = quintic(0.0, 0.0, lean_x, jump_t_crouch, s);
+                    let (mut x, mut vx, mut ax) = quintic(0.0, run_v0.x, lean_x, jump_t_crouch, s);
                     let mut lean_y = jump_lean_y + rearm_shift.y;
                     if hop_crouch_dy != 0.0 && repeats_done > 0 && let Some(sl) = hop_leg {
                         lean_y += if sl == 0 { -hop_crouch_dy } else { hop_crouch_dy };
@@ -2056,7 +2175,19 @@ fn main() {
                         lean_y += alt_sign * hop_alt_lean_y;
                     }
                     let (mut y, mut vy, mut ay) = quintic(0.0, 0.0, lean_y, jump_t_crouch, s);
-                    let ky = if hop_alt { alt_sign * hop_alt_vy / jv } else { jvy / jv };
+                    // HOP_RUN: the stance plan made at the re-arm (y relative
+                    // to the re-arm CoM), straight on at its end speed after
+                    let run_y = |s: f64| -> (f64, f64, f64) {
+                        let n = hop_run_plan.len() - 1;
+                        let i = ((s / dt).round() as usize).min(n);
+                        let (y, vy, ay) = hop_run_plan[i];
+                        if i < n { (y, vy, ay) } else { (y + vy * (s - n as f64 * dt).max(0.0), vy, 0.0) }
+                    };
+                    if run_now {
+                        lean_y = 0.0;
+                        (y, vy, ay) = run_y(s);
+                    }
+                    let ky = if run_now { alt_sign * hop_run_vy / jv } else if hop_alt { alt_sign * hop_alt_vy / jv } else { jvy / jv };
                     let jump_lat = jump_lat || hop_alt;
                     let kx = jvx * fwd_s / jv;
                     let s_push = s - jump_t_crouch - jump_t_hold;
@@ -2111,7 +2242,12 @@ fn main() {
                             x = lean_x + kx * (z0 - z_low) + kx * v0 * sr;
                             vx = kx * v0;
                             ax = 0.0;
-                            if jump_lat {
+                            if jump_lat && run_now {
+                                let (yl, vyl, ayl) = run_y(s);
+                                y = yl + ky * (z0 - z_low) + ky * v0 * sr;
+                                vy = vyl + ky * v0;
+                                ay = ayl;
+                            } else if jump_lat {
                                 y = lean_y + ky * (z0 - z_low) + ky * v0 * sr;
                                 vy = ky * v0;
                                 ay = 0.0;
@@ -2511,7 +2647,8 @@ fn main() {
                 } else if let Some(sl) = hop_leg {
                     // one-leg hop: the stance foot to the capture point, the
                     // lifted foot shifted with it (not swung to the same x)
-                    let tgt = flight_feet_capture * com_vel.x / (G / h).sqrt() - prof.sole_centre_x;
+                    let k = if hop_run { hop_run_capture_x } else { flight_feet_capture };
+                    let tgt = k * com_vel.x / (G / h).sqrt() - prof.sole_centre_x;
                     let d = (tgt - off[sl].x) * b;
                     for o in off.iter_mut() {
                         o.x += d;
@@ -2531,10 +2668,22 @@ fn main() {
                 let h = (stand_z - (fz_stand[0].min(fz_stand[1]) - prof.sole_below_origin)).max(0.3);
                 let b = ((t - t0f) / flight_feet_capture_t).clamp(0.0, 1.0);
                 let b = b * b * (3.0 - 2.0 * b);
-                let tgt = hop_flight_y_capture * com_vel.y / (G / h).sqrt() + if sl == 0 { hop_com_dy } else { -hop_com_dy };
+                let mut tgt = hop_flight_y_capture * com_vel.y / (G / h).sqrt() + if sl == 0 { hop_com_dy } else { -hop_com_dy };
+                if hop_run && let Some(oy) = hop_run_old_y {
+                    // outward of the capture point, clear of the old foot
+                    tgt = if sl == 0 { (tgt + hop_run_dcm).max(oy + hop_run_min_w - com.y) } else { (tgt - hop_run_dcm).min(oy - hop_run_min_w - com.y) };
+                    // the sole centre, not the foot origin (a yawed foot
+                    // carries its sole centre sideways)
+                    let m = misarta::se3::rotation_matrix(&data.oMi[feet[sl]]);
+                    tgt -= m[(1, 0)] * prof.sole_centre_x;
+                }
                 let d = (tgt - off[sl].y) * b;
                 for o in off.iter_mut() {
                     o.y += d;
+                }
+                if hop_run && tick % 10 == 0 {
+                    let p = misarta::se3::translation(&data.oMi[feet[sl]]);
+                    println!("  [run-air] t={t:.3} stance-to-be y target {:+.4} at {:+.4} (com {:+.4} vy {:+.3})", com.y + off[sl].y, p.y, com.y, com_vel.y);
                 }
             }
             if let (Some(zt), Some(t0f)) = (hop_alt_z, flight_t0) {
