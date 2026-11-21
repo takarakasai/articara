@@ -1073,6 +1073,13 @@ fn main() {
     // went on at a steady -0.36 m/s.
     let hop_run_capture_x = env_f64("HOP_RUN_CAPTURE_X", 1.0);
     let hop_run_cop = env_f64("HOP_RUN_COP", 0.02);
+    // HOP_RUN_STOP_DY (m, unset = 0): after the run's final landing (no
+    // re-arm follows), the landing reference (HOP_LAND_REF) goes this far
+    // further toward the free side. Measured 2026-11-21 (FV20, 7 of 32 fall
+    // standing after 10 hops): the free foot rests on the floor (~35 N),
+    // the stance CoP pins on the outer edge and the CoM walks out over it,
+    // as in the re-armed crouch of §53 (HOP_CROUCH_DY).
+    let hop_run_stop_dy = env_f64("HOP_RUN_STOP_DY", 0.0);
     let mut hop_run_v0 = na::Vector3::<f64>::zeros(); // CoM velocity at the re-arm
     let mut hop_run_p = 0.0_f64; // stance sole centre y at the re-arm
     let mut hop_run_plan: Vec<(f64, f64, f64)> = vec![(0.0, 0.0, 0.0)]; // stance lateral plan per tick: y - y0, vy, ay
@@ -2145,7 +2152,9 @@ fn main() {
                     // centre (HOP_COM_DY toward the free side) over this time.
                     if let (Some(sl), Some(tb)) = (hop_leg, hop_land_ref) {
                         let mut goal = sole(sl);
-                        goal.y += if sl == 0 { -hop_com_dy } else { hop_com_dy };
+                        // HOP_RUN_STOP_DY: the final landing of a run alone
+                        let dy = hop_com_dy + if hop_run && repeats_done >= jump_repeat { hop_run_stop_dy } else { 0.0 };
+                        goal.y += if sl == 0 { -dy } else { dy };
                         let (w, dw, ddw) = quintic(0.0, 0.0, 1.0, tb, s);
                         for i in 0..2 {
                             let e = goal[i] - c[i];
