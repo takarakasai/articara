@@ -1080,6 +1080,19 @@ fn main() {
     // the stance CoP pins on the outer edge and the CoM walks out over it,
     // as in the re-armed crouch of §53 (HOP_CROUCH_DY).
     let hop_run_stop_dy = env_f64("HOP_RUN_STOP_DY", 0.0);
+    // HOP_RUN_VX (m/s, unset = off): with HOP_RUN, hop on at this forward
+    // speed. The re-armed crouch's x reference blends from the touchdown
+    // speed to HOP_RUN_VX and moves on at it (instead of coming to rest;
+    // the push's JUMP_VX is still added). In flight the next stance sole's
+    // centre goes HOP_RUN_VX_LEAD (default 0.5) times the last stance's
+    // duration times HOP_RUN_VX ahead of the CoM, plus HOP_RUN_CAPTURE_X
+    // times (vx - HOP_RUN_VX) / omega (a Raibert placement). Measured
+    // 2026-11-21: a LIPM plan of the stance's CoP for the lift-off speed
+    // fails, open loop or replanned every tick: the stance amplifies a CoP
+    // error ~27 times (Ad 27 1/s) and the realised CoP sits 2-3 cm ahead.
+    let hop_run_vx = if hop_run { std::env::var("HOP_RUN_VX").ok().map(|s| s.parse::<f64>().expect("HOP_RUN_VX")) } else { None };
+    let hop_run_vx_lead = env_f64("HOP_RUN_VX_LEAD", 0.5);
+    let mut hop_run_t_st = 0.45_f64;
     let mut hop_run_v0 = na::Vector3::<f64>::zeros(); // CoM velocity at the re-arm
     let mut hop_run_p = 0.0_f64; // stance sole centre y at the re-arm
     let mut hop_run_plan: Vec<(f64, f64, f64)> = vec![(0.0, 0.0, 0.0)]; // stance lateral plan per tick: y - y0, vy, ay
@@ -1646,6 +1659,7 @@ fn main() {
                 };
                 let kk = if rr < 1.0 { (1.0 - rr) / t_push } else { 0.0 };
                 let t_s = jump_t_crouch + jump_t_hold + t_push;
+                hop_run_t_st = t_s;
                 let n = (t_s / dt).ceil() as usize;
                 // basis solutions A (y 1, v 0) and B (y 0, v 1), and w^2
                 let mut basis = Vec::with_capacity(n + 1);
@@ -2183,6 +2197,12 @@ fn main() {
                     }
                     let lean_x = jlean * fwd_s + rearm_shift.x;
                     let (mut x, mut vx, mut ax) = quintic(0.0, run_v0.x, lean_x, jump_t_crouch, s);
+                    // HOP_RUN_VX: from the touchdown speed on to vdes
+                    let run_xv = if run_now { hop_run_vx.map(|vd| (vd, lean_x)) } else { None };
+                    if let Some((vd, d1)) = run_xv {
+                        let (d, dd, ddd) = quintic(0.0, run_v0.x - vd, d1, jump_t_crouch, s);
+                        (x, vx, ax) = (vd * s + d, vd + dd, ddd);
+                    }
                     let mut lean_y = jump_lean_y + rearm_shift.y;
                     if hop_crouch_dy != 0.0 && repeats_done > 0 && let Some(sl) = hop_leg {
                         lean_y += if sl == 0 { -hop_crouch_dy } else { hop_crouch_dy };
@@ -2260,6 +2280,10 @@ fn main() {
                             x = lean_x + kx * (z0 - z_low) + kx * v0 * sr;
                             vx = kx * v0;
                             ax = 0.0;
+                            if let Some((vd, d1)) = run_xv {
+                                x += vd * s + d1 - lean_x;
+                                vx += vd;
+                            }
                             if jump_lat && run_now {
                                 let (yl, vyl, ayl) = run_y(s);
                                 y = yl + ky * (z0 - z_low) + ky * v0 * sr;
@@ -2666,7 +2690,14 @@ fn main() {
                     // one-leg hop: the stance foot to the capture point, the
                     // lifted foot shifted with it (not swung to the same x)
                     let k = if hop_run { hop_run_capture_x } else { flight_feet_capture };
-                    let tgt = k * com_vel.x / (G / h).sqrt() - prof.sole_centre_x;
+                    let tgt = if let Some(vd) = hop_run_vx {
+                        // HOP_RUN_VX: the neutral point ahead plus capture of the
+                        // speed error, the sole centre of the (yawed) foot
+                        let m = misarta::se3::rotation_matrix(&data.oMi[feet[sl]]);
+                        hop_run_vx_lead * hop_run_t_st * vd + k * (com_vel.x - vd) / (G / h).sqrt() - m[(0, 0)] * prof.sole_centre_x
+                    } else {
+                        k * com_vel.x / (G / h).sqrt() - prof.sole_centre_x
+                    };
                     let d = (tgt - off[sl].x) * b;
                     for o in off.iter_mut() {
                         o.x += d;
