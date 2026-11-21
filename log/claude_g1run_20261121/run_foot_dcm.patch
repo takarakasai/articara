@@ -1,0 +1,61 @@
+diff --git a/misa-biped/src/config.rs b/misa-biped/src/config.rs
+index 53438f3..760a8dd 100644
+--- a/misa-biped/src/config.rs
++++ b/misa-biped/src/config.rs
+@@ -180,6 +180,7 @@ impl Config {
+                 run_foot_kx: None,
+                 run_foot_tau: 0.4,
+                 run_foot_max: 0.08,
++                run_foot_dcm: 0.0,
+                 heel_toe: false,
+                 heel_strike_deg: 6.0,
+                 toe_off_deg: 12.0,
+@@ -1057,6 +1058,13 @@ pub struct SwingConfig {
+     pub run_foot_kx: Option<f64>,
+     pub run_foot_tau: f64,
+     pub run_foot_max: f64,
++    /// `RUN_FOOT_DCM`: running only, the touchdown target also moves by
++    /// this times the DCM error (xi - xi_ref). The velocity term alone
++    /// steps from the PLANNED footstep, so a CoM that has fallen behind the
++    /// plan still lands ahead of itself and brakes (measured on G1 at
++    /// 0.27-0.33 m/s: the error grows over four steps into a backward fall).
++    /// Shares the `RUN_FOOT_MAX` cap. 0 = off.
++    pub run_foot_dcm: f64,
+     /// `HEEL_TOE`: walking with heel strike and toe-off -- the landing
+     /// foot comes down toe-up (`HEEL_STRIKE_DEG`) on its heel edge and rolls
+     /// flat over `HEEL_ROLL_TIME` [s]; the rear foot rolls onto its toe edge
+diff --git a/misa-biped/src/kv.rs b/misa-biped/src/kv.rs
+index 9335b38..8ef6308 100644
+--- a/misa-biped/src/kv.rs
++++ b/misa-biped/src/kv.rs
+@@ -285,6 +285,7 @@ pub fn config_over_kv(base: Option<Config>, prof: &Profile, get: &dyn Fn(&str) -
+             run_foot_kx: opt("RUN_FOOT_KX").or(d.run_foot_kx),
+             run_foot_tau: num("RUN_FOOT_TAU", d.run_foot_tau).max(1e-3),
+             run_foot_max: num("RUN_FOOT_MAX", d.run_foot_max).max(0.0),
++            run_foot_dcm: num("RUN_FOOT_DCM", d.run_foot_dcm),
+             heel_toe: flag("HEEL_TOE", d.heel_toe),
+             heel_strike_deg: num("HEEL_STRIKE_DEG", d.heel_strike_deg),
+             toe_off_deg: num("TOE_OFF_DEG", d.toe_off_deg),
+diff --git a/misa-biped/src/walker/phases.rs b/misa-biped/src/walker/phases.rs
+index b379dbc..fa990d9 100644
+--- a/misa-biped/src/walker/phases.rs
++++ b/misa-biped/src/walker/phases.rs
+@@ -4133,7 +4133,7 @@ pub(crate) fn phase_task_refs(
+     let mut swing2: Option<SwingRef> = None;
+     // Raibert / running capture point: the touchdown moves by k(v - v_cmd)
+     let mut run_foot_dv: Option<na::Vector2<f64>> = None;
+-    if running && (cfg.swing.run_foot_k != 0.0 || cfg.swing.run_foot_kx.is_some_and(|k| k != 0.0)) {
++    if running && (cfg.swing.run_foot_k != 0.0 || cfg.swing.run_foot_kx.is_some_and(|k| k != 0.0) || cfg.swing.run_foot_dcm != 0.0) {
+         let ema = ctl.run_vel_ema.unwrap_or_else(|| obs_state(obs).com_vel.xy());
+         let yaw = 0.5 * (sup.steps.yaw[0] + sup.steps.yaw[1]);
+         let v_cmd = na::Vector2::new(yaw.cos(), yaw.sin()) * k.vx;
+@@ -4144,6 +4144,9 @@ pub(crate) fn phase_task_refs(
+         let kx = cfg.swing.run_foot_kx.unwrap_or(cfg.swing.run_foot_k);
+         let (dx, dy) = (kx * ex, cfg.swing.run_foot_k * ey);
+         let mut dv = na::Vector2::new(c_ * dx - s_ * dy, s_ * dx + c_ * dy);
++        if cfg.swing.run_foot_dcm != 0.0 {
++            dv += cfg.swing.run_foot_dcm * (dcm.xi - dcm.r.xi);
++        }
+         let m = cfg.swing.run_foot_max;
+         if dv.norm() > m {
+             dv *= m / dv.norm();
