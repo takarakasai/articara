@@ -961,6 +961,15 @@ fn main() {
     // +0.69 from the lifted leg), the pelvis turns the other way and a hop
     // lands with the pelvis and the held foot yaw 0.46 rad apart.
     let hop_push_pelvis = flag("HOP_PUSH_PELVIS", false);
+    // HOP_FREE_X_W=w (with HOP_LEG, 0 = off): from each jump's crouch to
+    // its lift-off, an x-only task (weight w, gains KP/KD_HOP_FOOT) holding
+    // the lifted foot at the CoM's x (+ HOP_FREE_DX m). Measured 2026-11-21
+    // (HOP_RUN): every lift-off leaves the lifted foot 12-15 cm ahead of the
+    // CoM (the push tilts the pelvis back 0.2 rad and the weight-0.03 foot
+    // follows); with HOP_ALT that foot is the next stance and pulling it
+    // under the CoM in flight tilts the pelvis back another 0.2-0.6 rad.
+    let hop_free_x_w = env_f64("HOP_FREE_X_W", 0.0).max(0.0);
+    let hop_free_dx = env_f64("HOP_FREE_DX", 0.0);
     let hop_push_foot_w = env_f64("HOP_PUSH_FOOT_W", hop_foot_w);
     let mut hop_rel_pelvis: Option<na::Vector3<f64>> = None;
     // HOP_TRUNK_YAW=w (with HOP_LEG, 0 = off): on the ground from the start
@@ -2900,6 +2909,17 @@ fn main() {
                 Some((rot, rot_tgt, omega, kp_ffr, kd_ffr)),
             ));
             names.push(if hop_in_push { "hop foot push" } else { "hop foot" });
+            if hop_free_x_w > 0.0 && jump_v > 0.0 && t >= t_launch && push_end.is_none() {
+                // HOP_FREE_X_W: the lifted foot's x alone at the CoM's x
+                let a = kp_hop * (com.x + hop_free_dx - pos.x) + kd_hop * (com_vel.x - vel.x);
+                levels.push(tasks::cartesian_acceleration(
+                    dyn_ctx.qddot(),
+                    &jf.rows(3, 1).into_owned(),
+                    &na::DVector::from_vec(vec![djv[3]]),
+                    &na::DVector::from_vec(vec![a]),
+                ));
+                names.push("hop free x");
+            }
         }
         if let Some((sw, t0s, p0, p1, _)) = step_st {
             let s = ((t - t0s) / land_step_t).clamp(0.0, 1.0);
@@ -2962,6 +2982,7 @@ fn main() {
                     "reseat" => foot_reseat_w,
                     "hop foot" => hop_foot_w,
                     "hop foot push" => hop_push_foot_w,
+                    "hop free x" => hop_free_x_w,
                     "trunk yaw hop" => hop_trunk_yaw,
                     "momentum roll" => jump_mom_x_w,
                     "momentum yaw" => hop_mom_z_w,
