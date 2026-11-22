@@ -132,7 +132,7 @@ impl ArticaraApp {
         let sep_color = egui::Color32::from_rgb(60, 60, 72);
         ui.painter().line_segment(
             [title_bar_rect.left_bottom(), title_bar_rect.right_bottom()],
-            egui::Stroke::new(1.0, sep_color),
+            egui::Stroke::new(1.0_f32, sep_color),
         );
 
         // ── Button dimensions ──

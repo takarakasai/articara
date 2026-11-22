@@ -80,7 +80,8 @@ pub(super) struct GaitPanelState {
     pub gesture: Option<articara::standing_gesture::StandingGestureConfig>,
     /// Elapsed phase time (s) fed to the gesture oscillator. Advances while a
     /// gesture is enabled, resets to 0 when disabled so each run starts at a
-    /// clean zero-crossing.
+    /// clean zero-crossing. Only read by the MuJoCo sim loop.
+    #[cfg_attr(not(feature = "mujoco"), allow(dead_code))]
     pub gesture_time_s: f64,
 }
 

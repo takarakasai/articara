@@ -305,7 +305,7 @@ impl ArticaraApp {
                 wipe_rect,
                 4.0,
                 egui::Color32::from_rgba_unmultiplied(20, 20, 30, 220),
-                egui::Stroke::new(1.0, egui::Color32::from_gray(180)),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_gray(180)),
                 egui::StrokeKind::Inside,
             );
             // Label inside the wipe.

@@ -118,7 +118,7 @@ impl ArticaraApp {
                 painter.rect_stroke(
                     btn_rect,
                     egui::CornerRadius::same(4),
-                    egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 180, 255)),
+                    egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(100, 180, 255)),
                     egui::StrokeKind::Outside,
                 );
             }
@@ -184,7 +184,7 @@ impl ArticaraApp {
                     painter.rect_stroke(
                         btn_rect,
                         egui::CornerRadius::same(3),
-                        egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 220, 130)),
+                        egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(80, 220, 130)),
                         egui::StrokeKind::Outside,
                     );
                 }
@@ -258,7 +258,7 @@ impl ArticaraApp {
                     painter.rect_stroke(
                         btn_rect,
                         egui::CornerRadius::same(3),
-                        egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 160, 255)),
+                        egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(100, 160, 255)),
                         egui::StrokeKind::Outside,
                     );
                 }
@@ -310,16 +310,16 @@ impl ArticaraApp {
 
         let pivot = egui::pos2(c.x - 2.0, c.y + 1.0);
         let arm1_start = egui::pos2(c.x - 11.0, c.y - 8.0);
-        painter.line_segment([arm1_start, pivot], egui::Stroke::new(3.0, icon_color));
+        painter.line_segment([arm1_start, pivot], egui::Stroke::new(3.0_f32, icon_color));
 
         let ghost_end = egui::pos2(pivot.x + 10.0, pivot.y + 3.0);
-        painter.line_segment([pivot, ghost_end], egui::Stroke::new(2.5, ghost_color));
+        painter.line_segment([pivot, ghost_end], egui::Stroke::new(2.5_f32, ghost_color));
 
         let arm2_end = egui::pos2(pivot.x + 8.0, pivot.y - 7.0);
-        painter.line_segment([pivot, arm2_end], egui::Stroke::new(3.0, icon_color));
+        painter.line_segment([pivot, arm2_end], egui::Stroke::new(3.0_f32, icon_color));
 
         painter.circle_filled(pivot, 3.0, icon_color);
-        painter.circle_stroke(pivot, 3.0, egui::Stroke::new(1.2, bg_color));
+        painter.circle_stroke(pivot, 3.0, egui::Stroke::new(1.2_f32, bg_color));
 
         let arc_r = 7.0;
         let a_start = -0.29_f32;
@@ -333,7 +333,7 @@ impl ArticaraApp {
             })
             .collect();
         for w in arc_pts.windows(2) {
-            painter.line_segment([w[0], w[1]], egui::Stroke::new(1.2, icon_color));
+            painter.line_segment([w[0], w[1]], egui::Stroke::new(1.2_f32, icon_color));
         }
         if let Some(&tip) = arc_pts.last() {
             let prev = arc_pts[arc_pts.len() - 2];
@@ -344,11 +344,11 @@ impl ArticaraApp {
             let sz = 3.5;
             painter.line_segment(
                 [tip, tip - nd * sz + perp * sz * 0.6],
-                egui::Stroke::new(1.2, icon_color),
+                egui::Stroke::new(1.2_f32, icon_color),
             );
             painter.line_segment(
                 [tip, tip - nd * sz - perp * sz * 0.6],
-                egui::Stroke::new(1.2, icon_color),
+                egui::Stroke::new(1.2_f32, icon_color),
             );
         }
     }
@@ -408,7 +408,7 @@ impl ArticaraApp {
             4.5,
             3.5,
             4.0,
-            egui::Stroke::new(1.2, ghost_color),
+            egui::Stroke::new(1.2_f32, ghost_color),
         );
 
         let s_cx = c.x + 4.5;
@@ -419,7 +419,7 @@ impl ArticaraApp {
             4.5,
             3.5,
             4.0,
-            egui::Stroke::new(1.6, solid_color),
+            egui::Stroke::new(1.6_f32, solid_color),
         );
 
         let arrow_start = egui::pos2(g_cx + 2.0, g_cy - 1.5);
@@ -437,7 +437,7 @@ impl ArticaraApp {
                 arrow_start.x + (arrow_end.x - arrow_start.x) * t1,
                 arrow_start.y + (arrow_end.y - arrow_start.y) * t1,
             );
-            painter.line_segment([p0, p1], egui::Stroke::new(1.4, arrow_color));
+            painter.line_segment([p0, p1], egui::Stroke::new(1.4_f32, arrow_color));
         }
         let ad = egui::vec2(arrow_end.x - arrow_start.x, arrow_end.y - arrow_start.y);
         let al = (ad.x * ad.x + ad.y * ad.y).sqrt().max(0.01);
@@ -446,11 +446,11 @@ impl ArticaraApp {
         let ah = 3.5_f32;
         painter.line_segment(
             [arrow_end, arrow_end - and * ah + aperp * ah * 0.5],
-            egui::Stroke::new(1.4, arrow_color),
+            egui::Stroke::new(1.4_f32, arrow_color),
         );
         painter.line_segment(
             [arrow_end, arrow_end - and * ah - aperp * ah * 0.5],
-            egui::Stroke::new(1.4, arrow_color),
+            egui::Stroke::new(1.4_f32, arrow_color),
         );
     }
 
@@ -574,7 +574,7 @@ impl ArticaraApp {
             for i in 0..ordered.len() {
                 let j = (i + 1) % ordered.len();
                 if let (Some(a), Some(b)) = (screen[i], screen[j]) {
-                    painter.line_segment([a, b], egui::Stroke::new(1.5, poly_color));
+                    painter.line_segment([a, b], egui::Stroke::new(1.5_f32, poly_color));
                 }
             }
             // Foot corner dots.
@@ -610,16 +610,16 @@ impl ArticaraApp {
                 self.project_world(ground_proj, rect, aspect),
             ) {
                 // Vertical drop line.
-                painter.line_segment([sp, gp], egui::Stroke::new(1.0, proj_color));
+                painter.line_segment([sp, gp], egui::Stroke::new(1.0_f32, proj_color));
                 // Ground-projection ring (= where the CoM lands on the floor).
                 if rect.contains(gp) {
-                    painter.circle_stroke(gp, 6.0, egui::Stroke::new(1.5, com_color));
+                    painter.circle_stroke(gp, 6.0, egui::Stroke::new(1.5_f32, com_color));
                     painter.circle_filled(gp, 1.5, com_color);
                 }
                 // CoM marker itself.
                 if rect.contains(sp) {
                     painter.circle_filled(sp, 5.0, com_color);
-                    painter.circle_stroke(sp, 5.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
+                    painter.circle_stroke(sp, 5.0, egui::Stroke::new(1.0_f32, egui::Color32::BLACK));
                     painter.text(
                         sp + egui::vec2(8.0, -6.0),
                         egui::Align2::LEFT_BOTTOM,
@@ -657,14 +657,14 @@ impl ArticaraApp {
         // Crosshair: two lines
         painter.line_segment(
             [egui::pos2(c.x - size, c.y), egui::pos2(c.x + size, c.y)],
-            egui::Stroke::new(1.5, color),
+            egui::Stroke::new(1.5_f32, color),
         );
         painter.line_segment(
             [egui::pos2(c.x, c.y - size), egui::pos2(c.x, c.y + size)],
-            egui::Stroke::new(1.5, color),
+            egui::Stroke::new(1.5_f32, color),
         );
         // Circle
-        painter.circle_stroke(c, size * 0.7, egui::Stroke::new(1.5, color));
+        painter.circle_stroke(c, size * 0.7, egui::Stroke::new(1.5_f32, color));
 
         // Numeric position label + IK error
         let error_str = match self.ik.error {
@@ -720,7 +720,7 @@ impl ArticaraApp {
         let shape = egui::Shape::convex_polygon(
             points,
             egui::Color32::from_rgba_unmultiplied(255, 180, 50, 80),
-            egui::Stroke::new(2.0, color),
+            egui::Stroke::new(2.0_f32, color),
         );
         painter.add(shape);
 
@@ -782,20 +782,20 @@ impl ArticaraApp {
         painter.circle_stroke(
             egui::pos2(c.x, ring_cy),
             3.0,
-            egui::Stroke::new(1.6, anchor_color),
+            egui::Stroke::new(1.6_f32, anchor_color),
         );
 
         let shank_top = ring_cy + 3.0;
         let shank_bot = c.y + 7.0;
         painter.line_segment(
             [egui::pos2(c.x, shank_top), egui::pos2(c.x, shank_bot)],
-            egui::Stroke::new(1.8, anchor_color),
+            egui::Stroke::new(1.8_f32, anchor_color),
         );
 
         let bar_y = c.y + 1.0;
         painter.line_segment(
             [egui::pos2(c.x - 5.0, bar_y), egui::pos2(c.x + 5.0, bar_y)],
-            egui::Stroke::new(1.6, anchor_color),
+            egui::Stroke::new(1.6_f32, anchor_color),
         );
 
         let n_seg = 6;
@@ -808,7 +808,7 @@ impl ArticaraApp {
                 })
                 .collect();
             for w in pts.windows(2) {
-                painter.line_segment([w[0], w[1]], egui::Stroke::new(1.6, anchor_color));
+                painter.line_segment([w[0], w[1]], egui::Stroke::new(1.6_f32, anchor_color));
             }
         }
 
@@ -917,7 +917,7 @@ impl ArticaraApp {
             let (ax, color, label) = &world_axes[i];
             let cam = view3 * ax;
             let tip = egui::pos2(center.x + cam.x * axis_len, center.y - cam.y * axis_len);
-            painter.line_segment([center, tip], egui::Stroke::new(2.5, *color));
+            painter.line_segment([center, tip], egui::Stroke::new(2.5_f32, *color));
             painter.circle_filled(tip, 4.0, *color);
             painter.text(
                 tip + egui::vec2(6.0, -6.0),
@@ -963,7 +963,7 @@ impl ArticaraApp {
             center,
             axes_size,
             egui::Stroke::new(
-                1.0,
+                1.0_f32,
                 egui::Color32::from_rgba_unmultiplied(160, 70, 160, 100),
             ),
         );
@@ -1005,7 +1005,7 @@ impl ArticaraApp {
             let (ax, color, label) = &ref_axes[*i];
             let c = view3 * ax;
             let tip = egui::pos2(center.x + c.x * axis_len, center.y - c.y * axis_len);
-            painter.line_segment([center, tip], egui::Stroke::new(1.5, *color));
+            painter.line_segment([center, tip], egui::Stroke::new(1.5_f32, *color));
             painter.circle_filled(tip, 6.0, *color);
             painter.text(
                 tip + egui::vec2(5.0, -5.0),
@@ -1062,7 +1062,7 @@ impl ArticaraApp {
                         center.x + (h_tip.x - center.x) * t1,
                         center.y + (h_tip.y - center.y) * t1,
                     );
-                    painter.line_segment([p0, p1], egui::Stroke::new(1.2, dash_color));
+                    painter.line_segment([p0, p1], egui::Stroke::new(1.2_f32, dash_color));
                 }
             }
             // Dashed vertical drop line from h_tip to arrow tip
@@ -1079,14 +1079,14 @@ impl ArticaraApp {
                         h_tip.x + (tip.x - h_tip.x) * t1,
                         h_tip.y + (tip.y - h_tip.y) * t1,
                     );
-                    painter.line_segment([p0, p1], egui::Stroke::new(1.0, dash_color));
+                    painter.line_segment([p0, p1], egui::Stroke::new(1.0_f32, dash_color));
                 }
             }
         }
 
         // ── 4. Main gravity arrow (bold purple) ──
         let arrow_color = egui::Color32::from_rgb(220, 110, 220);
-        painter.line_segment([center, tip], egui::Stroke::new(3.0, arrow_color));
+        painter.line_segment([center, tip], egui::Stroke::new(3.0_f32, arrow_color));
 
         // Arrowhead
         let dx = tip.x - center.x;
@@ -1598,7 +1598,7 @@ impl ArticaraApp {
                                     p_screen.x + r_screen * (a + step).cos(),
                                     p_screen.y + r_screen * (a + step).sin(),
                                 );
-                                painter.line_segment([p0, p1], egui::Stroke::new(2.0, color));
+                                painter.line_segment([p0, p1], egui::Stroke::new(2.0_f32, color));
                             }
                             a += step;
                         }
@@ -1633,16 +1633,16 @@ impl ArticaraApp {
                             egui::pos2(p_screen.x - s, p_screen.y),
                             egui::pos2(p_screen.x + s, p_screen.y),
                         ],
-                        egui::Stroke::new(2.0, color),
+                        egui::Stroke::new(2.0_f32, color),
                     );
                     painter.line_segment(
                         [
                             egui::pos2(p_screen.x, p_screen.y - s),
                             egui::pos2(p_screen.x, p_screen.y + s),
                         ],
-                        egui::Stroke::new(2.0, color),
+                        egui::Stroke::new(2.0_f32, color),
                     );
-                    painter.circle_stroke(p_screen, s * 0.6, egui::Stroke::new(2.0, color));
+                    painter.circle_stroke(p_screen, s * 0.6, egui::Stroke::new(2.0_f32, color));
                     painter.text(
                         p_screen + egui::vec2(s + 4.0, -s),
                         egui::Align2::LEFT_BOTTOM,
