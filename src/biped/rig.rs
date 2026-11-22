@@ -249,6 +249,10 @@ pub struct BipedRig {
     /// `SENSE_DELAY_SCOPE=basevel`: delay only the base linear and angular
     /// velocity (the IMU/fusion path); pose and joints stay fresh.
     pub sense_delay_basevel_only: bool,
+    /// `SENSE_DELAY_SCOPE=baselin|baseang|joints`: delay only the base
+    /// linear velocity, only the base angular velocity, or only the joint
+    /// encoders (q and qd) -- to tell which delayed channel a gait relies on.
+    pub sense_delay_scope_part: Option<String>,
     /// `SENSE_FILTER_V_HZ`: the same first-order low-pass on the base LINEAR
     /// velocity only (joint rates and angular velocity untouched). Measured
     /// 2026-10-22 on G1 v6.14: weak noise on the base linear velocity alone
@@ -857,6 +861,9 @@ impl BipedRig {
             sense_filter_hz: sense_env("SENSE_FILTER_HZ", 0.0).max(0.0),
             sense_delay_base_only: std::env::var("SENSE_DELAY_SCOPE").map(|v| v == "base").unwrap_or(false),
             sense_delay_basevel_only: std::env::var("SENSE_DELAY_SCOPE").map(|v| v == "basevel").unwrap_or(false),
+            sense_delay_scope_part: std::env::var("SENSE_DELAY_SCOPE")
+                .ok()
+                .filter(|v| matches!(v.as_str(), "baselin" | "baseang" | "joints")),
             sense_filter_dt: sense_env("SENSE_FILTER_DT", 0.005).max(1e-4),
             sense_filter_v_hz: sense_env("SENSE_FILTER_V_HZ", 0.0).max(0.0),
             base_vel_fuse_hz: sense_env("BASE_VEL_FUSE_HZ", 0.0).max(0.0),
@@ -976,7 +983,16 @@ impl BipedRig {
                 buf.pop_front();
             }
             let delayed = buf.front().cloned().unwrap_or_else(|| raw.clone());
-            if self.sense_delay_basevel_only {
+            if let Some(part) = self.sense_delay_scope_part.as_deref() {
+                match part {
+                    "baselin" => raw.v_lin_w = delayed.v_lin_w,
+                    "baseang" => raw.v_ang_w = delayed.v_ang_w,
+                    _ => {
+                        raw.joint_q = delayed.joint_q;
+                        raw.joint_qd = delayed.joint_qd;
+                    }
+                }
+            } else if self.sense_delay_basevel_only {
                 raw.v_lin_w = delayed.v_lin_w;
                 raw.v_ang_w = delayed.v_ang_w;
             } else if self.sense_delay_base_only {
