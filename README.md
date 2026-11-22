@@ -66,9 +66,14 @@ tooling but are treated as **lossy derivatives** of the `.misa` master.
 - **glTF 2.0 (`.glb` / `.gltf`) import & export** — exports the posed robot
   as a node hierarchy (link → joint → child link) any glTF viewer can open,
   with meshes embedded and the full `.misa` description stored in node
-  `extras`, so articara → glTF → articara is lossless. Plain glTF scenes
-  (Blender, CAD exporters) import as links on fixed joints, converted from
-  Y-up to Z-up. See [`src/gltf_io.rs`](src/gltf_io.rs).
+  `extras`, so articara → glTF → articara is lossless. Named poses and
+  sequences are exported as glTF animations (`pose/<name>`,
+  `sequence/<name>`) that Blender / three.js can play back. Plain glTF
+  scenes (Blender, CAD exporters) import as links on fixed joints,
+  converted from Y-up to Z-up; custom properties on a node (`joint_type`,
+  `joint_axis`, `joint_lower` / `joint_upper`, `mass`, `collision`, …) make
+  it a movable joint, so a robot can be assembled in Blender (export with
+  *Include → Custom Properties*). See [`src/gltf_io.rs`](src/gltf_io.rs).
 - **Rigid body dynamics** — O(n) Featherstone algorithms via [`misarta`](https://github.com/takarakasai/misarta) (kinematics, dynamics, autodiff-ready).
 - **3D viewer & GUI** — `eframe` + `glow` renderer with `egui_plot` overlays (default `gui` feature).
 - **Physics backend** — optional MuJoCo integration (`--features mujoco`, requires `mujoco-rs`).

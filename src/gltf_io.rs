@@ -36,7 +36,10 @@
 //!   attached to its parent by a fixed joint. Non-rigid parts of node
 //!   transforms (scale / shear) are baked into the mesh vertices, and the
 //!   Y-up scene is rotated into articara's Z-up frame. Each mesh primitive
-//!   becomes one visual coloured by its material's base colour.
+//!   becomes one visual coloured by its material's base colour. Custom
+//!   properties on a node (see [`NodeProps`]) turn its joint into a
+//!   revolute / continuous / prismatic one and set limits, mass and
+//!   collision, so a robot can be assembled in Blender.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -959,12 +962,87 @@ fn unique_name(base: &str, used: &mut HashSet<String>) -> String {
     name
 }
 
+/// Joint / link description read from a plain glTF node's custom
+/// properties (`extras`). Blender writes an object's custom properties
+/// there when exported with *Include → Custom Properties*.
+///
+/// | property         | meaning                                              |
+/// |------------------|------------------------------------------------------|
+/// | `joint_type`     | `revolute` / `continuous` / `prismatic` / `fixed`     |
+/// | `joint_axis`     | `[x, y, z]` in the node's local Z-up frame (default `[0, 0, 1]`) |
+/// | `joint_lower` / `joint_upper` | limits in rad or m (revolute default ±π) |
+/// | `joint_effort` / `joint_velocity` | actuator limits (0 = undeclared)  |
+/// | `joint_name`     | joint name (default `<link>_joint`)                   |
+/// | `mass`           | link mass in kg; inertia is computed from its meshes |
+/// | `collision`      | `true` to reuse the node's meshes as collision geometry |
+///
+/// The joint connects the parent node's link to this node's link, with
+/// the node's transform in the file as the zero position. Link frames are
+/// the nodes' frames brought back to Z-up, i.e. exactly the Blender
+/// object's local axes, so `joint_axis` is written as seen in Blender:
+/// `[0, 0, 1]` is the object's local Z.
+#[derive(Default)]
+struct NodeProps {
+    joint_type: Option<String>,
+    joint_axis: Option<[f64; 3]>,
+    joint_lower: Option<f64>,
+    joint_upper: Option<f64>,
+    joint_effort: Option<f64>,
+    joint_velocity: Option<f64>,
+    joint_name: Option<String>,
+    mass: Option<f64>,
+    collision: bool,
+}
+
+impl NodeProps {
+    fn from_node(node: &gltf::Node<'_>) -> Self {
+        let Some(extras) = parse_extras(node.extras()) else {
+            return Self::default();
+        };
+        let num = |k: &str| extras.get(k).and_then(Value::as_f64);
+        let text = |k: &str| extras.get(k).and_then(Value::as_str).map(str::to_string);
+        let axis = extras.get("joint_axis").and_then(Value::as_array).and_then(|a| {
+            let v: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
+            (v.len() == 3).then(|| [v[0], v[1], v[2]])
+        });
+        Self {
+            joint_type: text("joint_type"),
+            joint_axis: axis,
+            joint_lower: num("joint_lower"),
+            joint_upper: num("joint_upper"),
+            joint_effort: num("joint_effort"),
+            joint_velocity: num("joint_velocity"),
+            joint_name: text("joint_name"),
+            mass: num("mass"),
+            // Blender stores booleans as 0 / 1 integers.
+            collision: extras
+                .get("collision")
+                .is_some_and(|v| v.as_bool().unwrap_or(false) || v.as_f64().is_some_and(|x| x != 0.0)),
+        }
+    }
+
+    fn joint_kind(&self, node_name: &str) -> mn::JointKind {
+        match self.joint_type.as_deref().map(str::to_ascii_lowercase).as_deref() {
+            None | Some("fixed") => mn::JointKind::Fixed,
+            Some("revolute") => mn::JointKind::Revolute,
+            Some("continuous") => mn::JointKind::Continuous,
+            Some("prismatic") => mn::JointKind::Prismatic,
+            Some(other) => {
+                log::warn!("glTF import: node '{node_name}': unsupported joint_type '{other}', using fixed");
+                mn::JointKind::Fixed
+            }
+        }
+    }
+}
+
 struct GenericImport<'a> {
     buffers: &'a [Vec<u8>],
     file: mn::MisaFile,
     link_names: HashSet<String>,
     joint_names: HashSet<String>,
     meshes: Vec<(String, Slot, MeshData)>,
+    /// Link name → mass from a `mass` custom property.
+    masses: Vec<(String, f64)>,
 }
 
 impl GenericImport<'_> {
@@ -979,9 +1057,15 @@ impl GenericImport<'_> {
         let local = na::Matrix4::from_fn(|r, c| m[c][r] as f64);
         let world = parent_world * local;
         let (rigid, residual) = split_rigid(&world);
+        // A Y-up exporter (Blender) conjugates every node's frame by the
+        // axis conversion; undo it per node so link frames are Z-up again
+        // and match the object axes the author saw.
+        let rigid = rigid * na::Isometry3::from_parts(na::Translation3::identity(), z_up_to_y_up());
+        let residual = z_up_to_y_up().inverse().to_rotation_matrix().matrix() * residual;
 
         let base = node.name().map(str::to_string).unwrap_or_else(|| format!("node_{}", node.index()));
         let link_name = unique_name(&base, &mut self.link_names);
+        let props = NodeProps::from_node(&node);
         let mut link = mn::Link {
             name: link_name.clone(),
             description: String::new(),
@@ -996,6 +1080,14 @@ impl GenericImport<'_> {
                     continue;
                 };
                 let rgba = prim.material().pbr_metallic_roughness().base_color_factor();
+                if props.collision {
+                    self.meshes.push((link_name.clone(), Slot::Collision(link.collision.len()), data.clone()));
+                    link.collision.push(mn::Collision {
+                        origin: mn::Origin::default(),
+                        geom: placeholder_geom(),
+                        physics: None,
+                    });
+                }
                 self.meshes.push((link_name.clone(), Slot::Visual(link.visual.len()), data));
                 link.visual.push(mn::Visual {
                     origin: mn::Origin::default(),
@@ -1007,15 +1099,36 @@ impl GenericImport<'_> {
         }
         self.file.link.push(link);
 
-        let joint_name = unique_name(&format!("{link_name}_joint"), &mut self.joint_names);
+        if let Some(mass) = props.mass {
+            self.masses.push((link_name.clone(), mass));
+        }
+
+        let kind = props.joint_kind(&link_name);
+        // The axis is given in the node's local (Z-up) frame; map it into
+        // the link frame through the residual so scale doesn't skew it.
+        let axis_local = props.joint_axis.map(na::Vector3::from).unwrap_or_else(na::Vector3::z);
+        let axis = (residual * (z_up_to_y_up() * axis_local))
+            .try_normalize(1e-12)
+            .unwrap_or_else(na::Vector3::z);
+        let default_range = match kind {
+            mn::JointKind::Revolute => (-std::f64::consts::PI, std::f64::consts::PI),
+            _ => (0.0, 0.0),
+        };
+        let joint_base = props.joint_name.clone().unwrap_or_else(|| format!("{link_name}_joint"));
+        let joint_name = unique_name(&joint_base, &mut self.joint_names);
         self.file.joint.push(mn::Joint {
             name: joint_name,
-            kind: mn::JointKind::Fixed,
+            kind,
             parent: parent_link.to_string(),
             child: link_name.clone(),
-            axis: [0.0, 0.0, 1.0],
+            axis: [axis.x, axis.y, axis.z],
             origin: misa_origin(&(parent_rigid.inverse() * rigid)),
-            limit: mn::JointLimit::default(),
+            limit: mn::JointLimit {
+                lower: props.joint_lower.unwrap_or(default_range.0),
+                upper: props.joint_upper.unwrap_or(default_range.1),
+                effort: props.joint_effort.unwrap_or(0.0),
+                velocity: props.joint_velocity.unwrap_or(0.0),
+            },
             dynamics: mn::JointDynamics::default(),
         });
 
@@ -1069,6 +1182,7 @@ fn import_generic(
         link_names,
         joint_names: HashSet::new(),
         meshes: Vec::new(),
+        masses: Vec::new(),
     };
     // glTF is Y-up; articara is Z-up.
     let y_up_to_z_up = z_up_to_y_up().inverse().to_homogeneous();
@@ -1080,6 +1194,12 @@ fn import_generic(
     let mut model = RobotModel::from_misa_file(&imp.file, base)?;
     for (link, slot, mesh) in imp.meshes {
         set_slot_geometry(&mut model, &link, slot, mesh_geom(mesh));
+    }
+    for (link, mass) in imp.masses {
+        if let Some(&li) = model.link_map.get(&link) {
+            let l = &mut model.links[li];
+            l.inertial = compute_link_inertia(&l.visuals, mass);
+        }
     }
     model.rebuild_misarta_model();
     Ok(model)
@@ -1281,6 +1401,80 @@ mod tests {
         assert_eq!(imported.poses.len(), 2);
         assert_eq!(imported.sequences.len(), 1);
         assert_eq!(imported.sequences[0].steps.len(), 2);
+    }
+
+    /// glTF with one triangle mesh and the given nodes / scene roots.
+    fn triangle_gltf(nodes: Value, roots: Value) -> Vec<u8> {
+        let positions: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let bin: Vec<u8> = positions.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bin);
+        serde_json::to_vec(&json!({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": roots }],
+            "nodes": nodes,
+            "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }],
+            "accessors": [{
+                "bufferView": 0, "componentType": FLOAT, "count": 3, "type": "VEC3",
+                "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0],
+            }],
+            "bufferViews": [{ "buffer": 0, "byteLength": bin.len() }],
+            "buffers": [{ "byteLength": bin.len(), "uri": format!("data:application/octet-stream;base64,{b64}") }],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn import_joints_from_custom_properties() {
+        let bytes = triangle_gltf(
+            json!([
+                { "name": "base", "mesh": 0, "children": [1, 2], "extras": { "mass": 2.0, "collision": 1 } },
+                // Elbow 0.5 up (glTF Y = articara Z), hinge about the
+                // vertical: local Z in the Z-up convention.
+                { "name": "arm", "mesh": 0, "translation": [0.0, 0.5, 0.0], "extras": {
+                    "joint_type": "revolute", "joint_axis": [0.0, 0.0, 1.0],
+                    "joint_lower": -0.5, "joint_upper": 2.0, "joint_name": "elbow",
+                    "joint_effort": 10.0,
+                } },
+                { "name": "slider", "scale": [2.0, 2.0, 2.0], "extras": {
+                    "joint_type": "PRISMATIC", "joint_axis": [1.0, 0.0, 0.0], "joint_upper": 0.3,
+                } },
+            ]),
+            json!([0]),
+        );
+        let model = import_gltf_from_slice(&bytes, None).unwrap();
+
+        // Unrotated nodes give world-aligned (Z-up) link frames.
+        let tf = model.compute_transforms();
+        assert!(tf["arm"].rotation.angle() < 1e-6);
+
+        let elbow = &model.joints[model.joint_map["elbow"]];
+        assert_eq!(elbow.joint_type, "revolute");
+        assert_eq!((elbow.parent_link.as_str(), elbow.child_link.as_str()), ("base", "arm"));
+        assert!((elbow.axis - na::Vector3::z()).norm() < 1e-6, "{:?}", elbow.axis);
+        assert_eq!((elbow.lower, elbow.upper, elbow.effort), (-0.5, 2.0, 10.0));
+        assert!((elbow.origin.translation.vector - na::Vector3::new(0.0, 0.0, 0.5)).norm() < 1e-6);
+
+        let slider = &model.joints[model.joint_map["slider_joint"]];
+        assert_eq!(slider.joint_type, "prismatic");
+        // Scale must not leak into the axis length.
+        assert!((slider.axis - na::Vector3::x()).norm() < 1e-6, "{:?}", slider.axis);
+        assert_eq!((slider.lower, slider.upper), (0.0, 0.3));
+
+        // The joint actually moves the child.
+        let mut posed = model.clone();
+        posed.joint_positions[model.joint_map["elbow"]] = std::f64::consts::FRAC_PI_2;
+        let before = model.compute_transforms()["arm"].rotation;
+        let after = posed.compute_transforms()["arm"].rotation;
+        assert!((before.angle_to(&after) - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+
+        let base = &model.links[model.link_map["base"]];
+        assert_eq!(base.inertial.mass, 2.0);
+        assert_eq!(base.collisions.len(), 1);
+        assert!(matches!(base.collisions[0].geometry, GeomData::Mesh { .. }));
+        // No properties → fixed joint, no collision.
+        assert!(model.links[model.link_map["arm"]].collisions.is_empty());
+        assert_eq!(model.joints[model.joint_map["base_joint"]].joint_type, "fixed");
     }
 
     /// Minimal hand-written glTF: a scaled parent node with a child mesh
