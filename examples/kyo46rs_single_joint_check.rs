@@ -218,14 +218,13 @@ fn main() {
     println!("\n=== Phase 1: step response (target={TARGET_JOINT}) ===");
     let steps = [(SEED, 1.0), (1.05, 1.5), (0.35, 1.5)];
     let mut t = 0.0;
-    let mut settle_reported = false;
     for (step_target, duration_s) in steps {
         println!("  step to {step_target:+.3} rad, holding {duration_s:.1}s");
         let n = (duration_s / dt) as usize;
         let mut overshoot: f64 = 0.0;
         let step_start_q = robot.joint_positions[target_ji];
         let rising = step_target > step_start_q;
-        settle_reported = false;
+        let mut settle_reported = false;
         for i in 0..n {
             let (q_now, qd_now, status) = run_tick(&mut robot, &mut sim, step_target, 0.0, 0.0);
             t += dt;

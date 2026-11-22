@@ -368,7 +368,7 @@ fn main() {
         [p[0], p[1]]
     };
     let z_lo = z_hi * 0.85; // ~15% squat depth
-    let z_mid = 0.5 * (z_hi + z_lo);
+    let _z_mid = 0.5 * (z_hi + z_lo);
     let amp = 0.0; // DIAGNOSTIC: freeze height, static standing only
     let post_burnin_rpy = sim
         .body_world_orientation(&robot.root_link)
@@ -671,7 +671,7 @@ fn main() {
         // (origin (0.010,0,-0.0295), z size 0.059) the bottom-face centre
         // is at (0.010, 0, -0.059) in the foot link frame.
         const SOLE_OFFSET_LOCAL: [f64; 3] = [0.010, 0.0, -0.059];
-        let mut to_sole = |foot_link: &str, sel: &na::DMatrix<f64>| -> na::DMatrix<f64> {
+        let to_sole = |foot_link: &str, sel: &na::DMatrix<f64>| -> na::DMatrix<f64> {
             let rot = sim
                 .body_world_orientation(foot_link)
                 .expect("foot orientation")

@@ -277,7 +277,7 @@ impl ArticaraApp {
             SimDragMode::Force => egui::Color32::from_rgb(255, 200, 80),
             SimDragMode::Posture => egui::Color32::from_rgb(120, 220, 120),
         };
-        painter.circle_stroke(p0, 6.0, egui::Stroke::new(2.0, color));
+        painter.circle_stroke(p0, 6.0, egui::Stroke::new(2.0_f32, color));
         let label = match state.mode {
             SimDragMode::Force => "Force drag",
             SimDragMode::Posture => "Posture drag",

@@ -6808,7 +6808,7 @@ fn go2_wbc_bound_cmaes_mode_h() {
         ((seed >> 11) as f64) / ((1u64 << 53) as f64)
     };
     // Box-Muller from two uniforms
-    let mut gauss = move |m: f64, s: f64, u1: f64, u2: f64| {
+    let gauss = move |m: f64, s: f64, u1: f64, u2: f64| {
         let r = (-2.0 * (u1.max(1e-12)).ln()).sqrt();
         m + s * r * (2.0 * std::f64::consts::PI * u2).cos()
     };

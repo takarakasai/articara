@@ -1505,7 +1505,7 @@ impl ArticaraApp {
                     egui::pos2(click_rect.left() + 4.0, click_rect.bottom() - 1.0),
                     egui::pos2(click_rect.right() - 4.0, click_rect.bottom() - 1.0),
                 ],
-                egui::Stroke::new(1.0, wbc_color),
+                egui::Stroke::new(1.0_f32, wbc_color),
             );
         }
 
