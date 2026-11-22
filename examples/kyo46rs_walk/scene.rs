@@ -429,6 +429,20 @@ pub fn build_scene(o: &mut RigOptions) -> Scene {
             seed ^= seed << 17;
             (seed >> 11) as f64 / (1u64 << 53) as f64
         };
+        // TERRAIN_BUMP_DEPTH (default 0 = the boxes sit on the floor): extend
+        // each box this far below the floor. A box only a few mm tall lets a
+        // foot sphere that slides in from the side get past its mid-height,
+        // and MuJoCo then pushes it out through the BOTTOM face: the bump
+        // presses the toe down into the floor (~1.8 kN each way, 2026-11-22),
+        // which no real bump does. Below the floor the side and top faces
+        // stay the nearest ones.
+        let depth = env_f64("TERRAIN_BUMP_DEPTH", 0.0).max(0.0);
+        // TERRAIN_BUMP_SOLREF="timeconst,dampratio" (default unset = MuJoCo's
+        // default contact): a stiffer contact on the bumps only, with a
+        // priority above the feet's so it is the one MuJoCo uses.
+        let solref = std::env::var("TERRAIN_BUMP_SOLREF")
+            .map(|v| format!(" solref=\"{}\" priority=\"2\"", v.replace(',', " ")))
+            .unwrap_or_default();
         let mut wb = String::new();
         let mut log = Vec::new();
         for k in 0..n {
@@ -436,8 +450,8 @@ pub fn build_scene(o: &mut RigOptions) -> Scene {
             let l = len * (0.5 + rnd());
             let xs = x0 + rnd() * (x1 - x0 - l).max(0.0);
             wb.push_str(&format!(
-                "\n    <body name=\"stair_bump_{k}\" pos=\"{:.4} 0 {:.4}\">\n      <geom name=\"stair_bump_{k}_geom\" type=\"box\" size=\"{:.4} {half_w:.4} {:.4}\" rgba=\"0.62 0.55 0.50 1\"/>\n    </body>",
-                xs + 0.5 * l, 0.5 * h, 0.5 * l, 0.5 * h
+                "\n    <body name=\"stair_bump_{k}\" pos=\"{:.4} 0 {:.4}\">\n      <geom name=\"stair_bump_{k}_geom\" type=\"box\" size=\"{:.4} {half_w:.4} {:.4}\" rgba=\"0.62 0.55 0.50 1\"{solref}/>\n    </body>",
+                xs + 0.5 * l, 0.5 * (h - depth), 0.5 * l, 0.5 * (h + depth)
             ));
             log.push(format!("[{xs:.2}+{l:.2} h{:.0}mm]", h * 1e3));
         }
