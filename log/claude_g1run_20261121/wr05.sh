@@ -5,7 +5,8 @@
 # The base controls carry accelerometer noise (SENSE_NOISE_A 0.02), so nom differs from wr04.sh
 # (one noise stream there). The bumps carry a stiff contact (TERRAIN_BUMP_SOLREF, tu76): with
 # MuJoCo's default one a running toe goes through a few-mm box and is clamped (§66).
-# Compare conditions with nom of this battery. Env ONLY="name ..." runs a subset; EXTRA="K=V ..." is added to every condition.
+# Compare conditions with nom of this battery. Env ONLY="name ..." runs a subset; EXTRA="K=V ..." is added to every condition;
+# SEED0=N runs seeds N+1..N+16 instead (fresh members; default 0).
 L=$(cd "$(dirname "$0")" && pwd); O=${1:?outdir}; B=${2:-log/claude_g1rand_20260925/kyo46rs_walk_tu76}
 export WALK_BIN=$B
 P="PUSH_STEP=12 PUSH_AT=0.5"
@@ -23,7 +24,7 @@ CONDS=(
 for c in "${CONDS[@]}"; do n=${c%%|*}; x=${c#*|}
   [ -n "${ONLY:-}" ] && [[ " $ONLY " != *" $n "* ]] && continue
   W=$O/$n; mkdir -p $W
-  for st in 0.072 0.096 0.12; do for s in $(seq 1 16); do echo "$st $s"; done; done |
+  for st in 0.072 0.096 0.12; do for s in $(seq $((${SEED0:-0}+1)) $((${SEED0:-0}+16))); do echo "$st $s"; done; done |
     xargs -P 16 -L 1 sh -c "$L/runwalk.sh /home/takara/work/dp/articara/log/claude_g1rand_20260924/FAM_v621n_bump10/T40/m00/controls.json $W/st\$0_s\$1.log \
       T=15 T_DS=0 T_SS=0.30 T_FLIGHT=0.06 RUN_SWING_RISE=0.15 RUN_SWING_FALL=0.3 RUN_EVENT_TD=1 RUN_LAND_RAMP=0.03 PUSH_REPLAN=0 PUSH_Z_DROP=0 REF_LIBRARY= MPC_FOOTSTEP=0 RUN_FOOT_KX=0.1 RUN_FOOT_K=0.2 RUN_FOOT_TAU=0.1 \
       RUN_Z_LEVEL=1 VX2=0 VX2_AT=24 VX2_RAMP=3 $x ${EXTRA:-} STRIDE=\$0 INIT_SEED=\$1 TERRAIN_SEED=\$1 SENSE_SEED=\$1 >/dev/null" 
