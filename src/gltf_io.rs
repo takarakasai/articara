@@ -22,6 +22,12 @@
 //! `extras.articara_geom`. Collision meshes live in a second, non-default
 //! scene so viewers don't draw them.
 //!
+//! Named poses and sequences are also written as glTF animations
+//! (`pose/<name>`: from the current pose to that pose; `sequence/<name>`:
+//! the steps chained from the current pose), sampled at
+//! [`ANIMATION_FPS`] so viewers can play them back. They are derived data:
+//! import ignores them and restores poses / sequences from the `.misa`.
+//!
 //! ## Import
 //!
 //! - **With `extras.articara`** (files written by articara): the model is
@@ -113,6 +119,9 @@ struct GltfBuilder {
     nodes: Vec<Value>,
     /// RGBA bit pattern → material index, so equal colours share a material.
     material_cache: HashMap<[u32; 4], usize>,
+    /// Joint index → node of the child link it moves (animation target).
+    joint_child_node: HashMap<usize, usize>,
+    animations: Vec<Value>,
 }
 
 impl GltfBuilder {
@@ -155,6 +164,51 @@ impl GltfBuilder {
             }
             acc["min"] = json!(min);
             acc["max"] = json!(max);
+        }
+        self.accessors.push(acc);
+        self.accessors.len() - 1
+    }
+
+    /// Float accessor of `N`-component elements (no buffer-view target, as
+    /// for animation samplers). `with_bounds` adds the min / max that
+    /// sampler inputs require.
+    fn push_floats<const N: usize>(&mut self, data: &[[f32; N]], with_bounds: bool) -> usize {
+        let bytes: Vec<u8> = data
+            .iter()
+            .flat_map(|v| v.iter().flat_map(|c| c.to_le_bytes()))
+            .collect();
+        while self.bin.len() % 4 != 0 {
+            self.bin.push(0);
+        }
+        self.buffer_views.push(json!({
+            "buffer": 0,
+            "byteOffset": self.bin.len(),
+            "byteLength": bytes.len(),
+        }));
+        self.bin.extend_from_slice(&bytes);
+        let ty = match N {
+            1 => "SCALAR",
+            3 => "VEC3",
+            4 => "VEC4",
+            _ => unreachable!("unsupported accessor width {N}"),
+        };
+        let mut acc = json!({
+            "bufferView": self.buffer_views.len() - 1,
+            "componentType": FLOAT,
+            "count": data.len(),
+            "type": ty,
+        });
+        if with_bounds {
+            let mut min = [f32::INFINITY; N];
+            let mut max = [f32::NEG_INFINITY; N];
+            for v in data {
+                for k in 0..N {
+                    min[k] = min[k].min(v[k]);
+                    max[k] = max[k].max(v[k]);
+                }
+            }
+            acc["min"] = json!(min.as_slice());
+            acc["max"] = json!(max.as_slice());
         }
         self.accessors.push(acc);
         self.accessors.len() - 1
@@ -305,6 +359,8 @@ fn build_document(model: &RobotModel) -> Result<(Value, Vec<u8>), String> {
     let root_pose = world.get(&model.root_link).copied().unwrap_or_else(na::Isometry3::identity);
     let root_node = export_link(model, &model.root_link, &root_pose, &world, &mut b, &mut collision_nodes)?;
 
+    export_animations(model, &mut b);
+
     let mut robot = json!({
         "name": model.name,
         "children": [root_node],
@@ -327,6 +383,11 @@ fn build_document(model: &RobotModel) -> Result<(Value, Vec<u8>), String> {
     if !b.meshes.is_empty() {
         doc["meshes"] = json!(b.meshes);
         doc["materials"] = json!(b.materials);
+    }
+    if !b.animations.is_empty() {
+        doc["animations"] = json!(b.animations);
+    }
+    if !b.bin.is_empty() {
         doc["accessors"] = json!(b.accessors);
         doc["bufferViews"] = json!(b.buffer_views);
         doc["buffers"] = json!([{ "byteLength": b.bin.len() }]);
@@ -376,16 +437,12 @@ fn export_link(
         }
     }
 
-    let parent_world = world.get(link_name).copied().unwrap_or_else(na::Isometry3::identity);
     for &ji in model.children_joints.get(link_name).map(Vec::as_slice).unwrap_or(&[]) {
         let joint = &model.joints[ji];
         let origin = joint.origin.cast::<f64>();
-        // Child link pose relative to the joint frame = joint motion at q.
-        let motion = world
-            .get(&joint.child_link)
-            .map(|w| origin.inverse() * parent_world.inverse() * w)
-            .unwrap_or_else(na::Isometry3::identity);
+        let motion = joint_motion(model, ji, world);
         let child_idx = export_link(model, &joint.child_link, &motion, world, b, collision_nodes)?;
+        b.joint_child_node.insert(ji, child_idx);
         let mut jnode = json!({ "name": joint.name, "children": [child_idx] });
         set_trs(&mut jnode, &origin);
         children.push(b.add_node(jnode));
@@ -397,6 +454,163 @@ fn export_link(
     }
     set_trs(&mut node, pose);
     Ok(b.add_node(node))
+}
+
+/// Child-link pose relative to joint `ji`'s frame (= the joint motion at
+/// the configuration `world` was computed for).
+fn joint_motion(
+    model: &RobotModel,
+    ji: usize,
+    world: &HashMap<String, na::Isometry3<f64>>,
+) -> na::Isometry3<f64> {
+    let joint = &model.joints[ji];
+    match (world.get(&joint.parent_link), world.get(&joint.child_link)) {
+        (Some(p), Some(c)) => joint.origin.cast::<f64>().inverse() * p.inverse() * c,
+        _ => na::Isometry3::identity(),
+    }
+}
+
+/// Sampling rate of exported animations. Samples are joined with glTF
+/// `LINEAR` interpolation, so the smooth (cubic / quintic) profiles are
+/// reproduced closely without the viewer knowing about them.
+const ANIMATION_FPS: f64 = 30.0;
+
+/// One joint-space segment of an exported animation.
+struct Segment {
+    q_end: Vec<f64>,
+    duration: f64,
+    kind: misarta::trajectory::InterpolationKind,
+}
+
+/// Emit one glTF animation per named pose (a transition from the current
+/// pose) and per sequence (its steps chained from the current pose), so
+/// viewers such as Blender or three.js can play them back.
+fn export_animations(model: &RobotModel, b: &mut GltfBuilder) {
+    let current = model.joint_positions.clone();
+    for pose in &model.poses {
+        let segment = Segment {
+            q_end: pose.to_vector(model, &current),
+            duration: pose.duration,
+            kind: pose.kind,
+        };
+        add_animation(model, b, &format!("pose/{}", pose.name), &current, &[segment]);
+    }
+    for seq in &model.sequences {
+        let mut q = current.clone();
+        let mut segments = Vec::new();
+        for step in &seq.steps {
+            let Some(pose) = model.poses.iter().find(|p| p.name == step.pose_name) else {
+                log::warn!(
+                    "glTF export: sequence '{}' references unknown pose '{}', step skipped",
+                    seq.name,
+                    step.pose_name
+                );
+                continue;
+            };
+            let q_end = pose.to_vector(model, &q);
+            segments.push(Segment { q_end: q_end.clone(), duration: step.duration, kind: step.kind });
+            q = q_end;
+        }
+        add_animation(model, b, &format!("sequence/{}", seq.name), &current, &segments);
+    }
+}
+
+fn add_animation(model: &RobotModel, b: &mut GltfBuilder, name: &str, q_start: &[f64], segments: &[Segment]) {
+    // Movable joints and the node property each one drives.
+    let channels: Vec<(usize, &'static str)> = model
+        .joints
+        .iter()
+        .enumerate()
+        .filter(|(ji, _)| b.joint_child_node.contains_key(ji))
+        .flat_map(|(ji, j)| match j.joint_type.as_str() {
+            "fixed" => vec![],
+            "prismatic" => vec![(ji, "translation")],
+            "revolute" | "continuous" => vec![(ji, "rotation")],
+            _ => vec![(ji, "translation"), (ji, "rotation")],
+        })
+        .collect();
+    if channels.is_empty() {
+        return;
+    }
+
+    // Sample the joint trajectory: t = 0, then each segment at the fixed
+    // rate including its end point.
+    let mut samples: Vec<(f64, Vec<f64>)> = vec![(0.0, q_start.to_vec())];
+    let mut t0 = 0.0;
+    let mut q0 = q_start.to_vec();
+    for seg in segments {
+        let duration = seg.duration.max(0.0);
+        let transition =
+            misarta::trajectory::PoseTransition::new(q0.clone(), seg.q_end.clone(), duration, seg.kind);
+        let n = ((duration * ANIMATION_FPS).ceil() as usize).max(1);
+        for k in 1..=n {
+            let t = duration * k as f64 / n as f64;
+            samples.push((t0 + t, transition.evaluate(t)));
+        }
+        t0 += duration;
+        q0 = seg.q_end.clone();
+    }
+
+    // Through FK so mimic joints and joint conventions match the viewport.
+    let mut posed = model.clone();
+    if posed.misarta_cache.is_none() {
+        posed.rebuild_misarta_model();
+    }
+    let mut times = Vec::with_capacity(samples.len());
+    let mut values: Vec<Vec<[f32; 4]>> = vec![Vec::with_capacity(samples.len()); channels.len()];
+    for (t, q) in &samples {
+        posed.joint_positions = q.clone();
+        posed.enforce_mimic();
+        let world: HashMap<String, na::Isometry3<f64>> = posed
+            .compute_transforms()
+            .into_iter()
+            .map(|(name, iso)| (name, iso.cast::<f64>()))
+            .collect();
+        times.push([*t as f32]);
+        for (ci, &(ji, path)) in channels.iter().enumerate() {
+            let m = joint_motion(model, ji, &world);
+            values[ci].push(match path {
+                "translation" => {
+                    let v = m.translation.vector;
+                    [v.x as f32, v.y as f32, v.z as f32, 0.0]
+                }
+                _ => {
+                    let q = m.rotation.quaternion();
+                    [q.i as f32, q.j as f32, q.k as f32, q.w as f32]
+                }
+            });
+        }
+    }
+    // Keep consecutive quaternions in the same hemisphere so LINEAR (slerp)
+    // takes the short way round.
+    for (ci, &(_, path)) in channels.iter().enumerate() {
+        if path == "rotation" {
+            for k in 1..values[ci].len() {
+                let (prev, cur) = (values[ci][k - 1], values[ci][k]);
+                if prev.iter().zip(&cur).map(|(a, b)| a * b).sum::<f32>() < 0.0 {
+                    values[ci][k] = cur.map(|c| -c);
+                }
+            }
+        }
+    }
+
+    let input = b.push_floats(&times, true);
+    let mut samplers = Vec::new();
+    let mut anim_channels = Vec::new();
+    for (ci, &(ji, path)) in channels.iter().enumerate() {
+        let output = if path == "translation" {
+            let v3: Vec<[f32; 3]> = values[ci].iter().map(|v| [v[0], v[1], v[2]]).collect();
+            b.push_floats(&v3, false)
+        } else {
+            b.push_floats(&values[ci], false)
+        };
+        samplers.push(json!({ "input": input, "output": output, "interpolation": "LINEAR" }));
+        anim_channels.push(json!({
+            "sampler": samplers.len() - 1,
+            "target": { "node": b.joint_child_node[&ji], "path": path },
+        }));
+    }
+    b.animations.push(json!({ "name": name, "channels": anim_channels, "samplers": samplers }));
 }
 
 /// Pack a glTF JSON document and binary buffer into a GLB container.
@@ -443,14 +657,15 @@ pub fn import_gltf_from_slice(bytes: &[u8], source_path: Option<&Path>) -> Resul
     let buffers = load_buffers(&gltf, source_path.and_then(Path::parent))?;
     let doc = &gltf.document;
 
-    if doc.skins().next().is_some() || doc.animations().next().is_some() {
-        log::warn!("glTF import: skins / animations are ignored");
-    }
-
     let meta = doc.nodes().find_map(|n| {
         let mut extras = parse_extras(n.extras())?;
         extras.get_mut(META_KEY).map(Value::take)
     });
+    // articara's own animations are derived from the poses / sequences in
+    // the embedded `.misa`, so only foreign ones are worth a warning.
+    if doc.skins().next().is_some() || (meta.is_none() && doc.animations().next().is_some()) {
+        log::warn!("glTF import: skins / animations are ignored");
+    }
     let mut model = match meta {
         Some(meta) => import_articara(doc, &buffers, meta, source_path)?,
         None => import_generic(doc, &buffers, source_path)?,
@@ -1002,6 +1217,70 @@ mod tests {
         let got = to_z_up * worlds["arm_link"];
         let want = model.compute_transforms()["arm_link"].cast::<f64>().to_homogeneous();
         assert!((got - want).norm() < 1e-5, "got {got}, want {want}");
+    }
+
+    fn arm_model_with_motions() -> RobotModel {
+        use misarta::trajectory::InterpolationKind;
+        let mut model = arm_model();
+        let mut raised = NamedPose::snapshot("raised", &model, 1.0, InterpolationKind::QuinticSmooth);
+        raised.angles.insert("arm_joint".into(), 1.2);
+        let mut lowered = raised.clone();
+        lowered.name = "lowered".into();
+        lowered.angles.insert("arm_joint".into(), -0.8);
+        lowered.duration = 0.5;
+        model.poses = vec![raised, lowered];
+        model.sequences = vec![Sequence {
+            name: "wave".into(),
+            steps: vec![
+                SequenceStep { pose_name: "raised".into(), duration: 1.0, kind: InterpolationKind::Linear },
+                SequenceStep { pose_name: "lowered".into(), duration: 0.5, kind: InterpolationKind::CubicSmooth },
+            ],
+        }];
+        model
+    }
+
+    #[test]
+    fn poses_and_sequences_become_animations() {
+        let model = arm_model_with_motions();
+        let glb = export_glb(&model).unwrap();
+        let gltf = gltf::Gltf::from_slice(&glb).unwrap();
+        let buffers = load_buffers(&gltf, None).unwrap();
+
+        let names: Vec<_> = gltf.animations().map(|a| a.name().unwrap().to_string()).collect();
+        assert_eq!(names, ["pose/raised", "pose/lowered", "sequence/wave"]);
+
+        let wave = gltf.animations().find(|a| a.name() == Some("sequence/wave")).unwrap();
+        let channel = wave.channels().next().unwrap();
+        assert_eq!(channel.target().node().name(), Some("arm_link"));
+        assert_eq!(channel.target().property(), gltf::animation::Property::Rotation);
+
+        let reader = channel.reader(|b| buffers.get(b.index()).map(Vec::as_slice));
+        let times: Vec<f32> = reader.read_inputs().unwrap().collect();
+        assert_eq!(times[0], 0.0);
+        assert!((times.last().unwrap() - 1.5).abs() < 1e-6);
+        let gltf::animation::util::ReadOutputs::Rotations(rot) = reader.read_outputs().unwrap() else {
+            panic!("expected rotations");
+        };
+        let rot: Vec<[f32; 4]> = rot.into_f32().collect();
+        // Rotation about the joint's Y axis: angle at the end of each step.
+        let angle_at = |t: f32| {
+            let k = times.iter().position(|&x| (x - t).abs() < 1e-6).unwrap();
+            let [x, y, z, w] = rot[k];
+            assert!(x.abs() < 1e-5 && z.abs() < 1e-5);
+            2.0 * y.atan2(w)
+        };
+        assert!(angle_at(0.0).abs() < 1e-5);
+        assert!((angle_at(1.0) - 1.2).abs() < 1e-4);
+        assert!((angle_at(1.5) + 0.8).abs() < 1e-4);
+    }
+
+    #[test]
+    fn animations_do_not_disturb_roundtrip() {
+        let model = arm_model_with_motions();
+        let imported = import_gltf_from_slice(&export_glb(&model).unwrap(), None).unwrap();
+        assert_eq!(imported.poses.len(), 2);
+        assert_eq!(imported.sequences.len(), 1);
+        assert_eq!(imported.sequences[0].steps.len(), 2);
     }
 
     /// Minimal hand-written glTF: a scaled parent node with a child mesh
