@@ -4,7 +4,7 @@
 # INIT_SEED so the bumps and the noise differ per run. Prints survivors per condition.
 # The base controls carry accelerometer noise (SENSE_NOISE_A 0.02), so nom differs from wr04.sh
 # (one noise stream there): compare conditions with nom of this battery. Env ONLY="name ..." runs a subset.
-L=$(cd "$(dirname "$0")" && pwd); O=${1:?outdir}; B=${2:-log/claude_g1rand_20260925/kyo46rs_walk_tu72}
+L=$(cd "$(dirname "$0")" && pwd); O=${1:?outdir}; B=${2:-log/claude_g1rand_20260925/kyo46rs_walk_tu74}
 export WALK_BIN=$B
 P="PUSH_STEP=12 PUSH_AT=0.5"
 CONDS=(
