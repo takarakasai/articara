@@ -123,7 +123,7 @@ pub fn keyframe_times(seq: &Sequence) -> Vec<f64> {
 }
 
 /// Insert a keyframe at absolute time `time` holding `angles`: a new pose
-/// (named `<sequence>/k<n>`, unique) is added to the model and a step
+/// (named `<sequence>_k<n>`, unique and a valid `.misa` identifier) is added to the model and a step
 /// targeting it is spliced in, keeping every existing keyframe's absolute
 /// time. Past the end the sequence is extended. Returns the step index.
 pub fn insert_keyframe(
@@ -136,7 +136,7 @@ pub fn insert_keyframe(
     let seq_name = model.sequences[seq_idx].name.clone();
     let mut n = model.sequences[seq_idx].steps.len();
     let pose_name = loop {
-        let name = format!("{seq_name}/k{n}");
+        let (name, _) = misarta::native::sanitize_identifier(&format!("{seq_name}_k{n}"));
         if !model.poses.iter().any(|p| p.name == name) {
             break name;
         }
@@ -515,8 +515,10 @@ mod tests {
         let k = insert_keyframe(&mut model, 0, 2.0, pose("x", 0.1).angles, InterpolationKind::CubicSmooth);
         assert_eq!(k, 1);
         assert_eq!(keyframe_times(&model.sequences[0]), [1.0, 2.0, 3.0]);
-        assert_eq!(model.sequences[0].steps[1].pose_name, "s/k2");
-        assert!(model.poses.iter().any(|p| p.name == "s/k2"));
+        assert_eq!(model.sequences[0].steps[1].pose_name, "s_k2");
+        assert!(model.poses.iter().any(|p| p.name == "s_k2"));
+        // Names survive a `.misa` save / load unchanged.
+        assert!(model.poses.iter().all(|p| misarta::native::is_valid_identifier(&p.name)));
 
         // Past the end extends the sequence.
         insert_keyframe(&mut model, 0, 4.5, BTreeMap::new(), InterpolationKind::Linear);
