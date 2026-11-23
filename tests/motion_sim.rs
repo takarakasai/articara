@@ -131,3 +131,24 @@ fn export_with_recorded_feedforward_from_a_mujoco_run() {
     let effort = model.joints[model.joint_map["FL_calf_joint"]].effort;
     assert!(rows.iter().all(|r| r[col].abs() <= effort * 1.001));
 }
+
+/// `jump_hw` is `jump` tuned for the real robot by `examples/jump_tune.rs`:
+/// within every joint's range and velocity in plan, and passing the
+/// criteria in a motor-limited MuJoCo run — where the original fails.
+#[test]
+fn jump_hw_is_feasible_where_jump_is_not() {
+    let model = namiashi();
+    let criteria = articara::motion_run::Criteria::default();
+    let check = |name: &str| {
+        let seq = model.sequences.iter().find(|s| s.name == name).unwrap().clone();
+        let plan = articara::motion::Trajectory::from_sequence(&model, &seq, &model.joint_positions).unwrap();
+        let plan_issues = articara::motion::check(&model, &articara::motion::sample_series(&model, &plan, 0.005)).len();
+        let run = simulate(&model, &seq, &model.joint_positions, &RunConditions::default(), name).unwrap();
+        (plan_issues, RunSummary::new(&model, &run, Some(&plan)).verdict(&criteria))
+    };
+    let (plan_issues, verdict) = check("jump_hw");
+    assert_eq!(plan_issues, 0);
+    assert!(verdict.is_empty(), "{verdict:?}");
+    let (plan_issues, verdict) = check("jump");
+    assert!(plan_issues > 0 && !verdict.is_empty());
+}

@@ -201,3 +201,7 @@ required-features = ["mujoco"]
 name = "g1_flight_probe"
 required-features = ["mujoco"]
 
+
+[[example]]
+name = "jump_tune"
+required-features = ["mujoco"]

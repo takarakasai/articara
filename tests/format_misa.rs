@@ -1733,8 +1733,10 @@ child = "front-leg"
         assert_eq!(model.links.len(), 19);
         assert_eq!(model.joints.len(), 18);
         assert_eq!(model.collision_pairs.len(), 6);
-        assert_eq!(model.poses.len(), 4);
-        assert_eq!(model.sequences.len(), 1);
+        // 4 original poses + `jump` sequence, plus the hardware-tuned
+        // `jump_hw` and its 4 poses (from `examples/jump_tune.rs`).
+        assert_eq!(model.poses.len(), 8);
+        assert_eq!(model.sequences.len(), 2);
 
         // No sanitisation should have triggered on a clean file
         assert!(
