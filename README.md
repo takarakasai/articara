@@ -79,7 +79,13 @@ tooling but are treated as **lossy derivatives** of the `.misa` master.
   (issues, peak τ / velocity against the limits, tracking error, tilt),
   restore the plan of a good one, and save / load runs as CSV
   ([`src/motion_run.rs`](src/motion_run.rs)) — a hardware log with just
-  `time,<joint>,…` columns loads the same way. Exports the joint
+  `time,<joint>,…` columns loads the same way. **🧪 Sweep** runs the
+  sequence headless ([`src/motion_sim.rs`](src/motion_sim.rs)) under
+  nominal conditions and with ground friction, PD gains, damping, motor
+  torque limits or a push changed one at a time, and marks each run ✔ / ✖
+  against tilt / tracking / limit criteria — how far reality may drift
+  before the motion breaks. Peaks after the motion ends (landing,
+  settling) are reported apart from the motion itself. Exports the joint
   trajectory as CSV.
   Core in [`src/motion.rs`](src/motion.rs).
 - **Multi-format model loading** — `.misa` (native), URDF, MJCF (MuJoCo XML),

@@ -27,7 +27,7 @@ use eframe::egui;
 use egui_plot::{HLine, Line, LineStyle, Plot, PlotPoints, VLine};
 
 use articara::motion::{self, Issue, IssueKind, Series, Trajectory};
-use articara::motion_run::{PlanSnapshot, RunRecord, RunSummary};
+use articara::motion_run::{Criteria, PlanSnapshot, RunRecord, RunSummary};
 use misarta::trajectory::InterpolationKind;
 
 use super::ArticaraApp;
@@ -95,6 +95,68 @@ struct RunEntry {
     /// Fingerprint of the plan it ran (to flag runs of an older plan).
     plan_fp: Option<String>,
     overlay: bool,
+}
+
+/// Values of the robustness sweep, as typed (comma-separated lists).
+#[cfg(feature = "mujoco")]
+struct SweepForm {
+    friction: String,
+    kp: String,
+    kv: String,
+    damping: String,
+    effort: String,
+    push: String,
+    /// Push direction in the world frame.
+    push_dir: [f64; 3],
+    push_at: f64,
+}
+
+#[cfg(feature = "mujoco")]
+impl Default for SweepForm {
+    fn default() -> Self {
+        Self {
+            friction: "0.4, 1.0".into(),
+            kp: "0.7, 1.4".into(),
+            kv: "0.5, 2.0".into(),
+            damping: "0, 3".into(),
+            effort: "0.8, 0.9".into(),
+            push: "20, 40".into(),
+            push_dir: [1.0, 0.0, 0.0],
+            push_at: 0.3,
+        }
+    }
+}
+
+#[cfg(feature = "mujoco")]
+impl SweepForm {
+    fn axes(&self) -> Result<Vec<articara::motion_sim::SweepAxis>, String> {
+        use articara::motion_sim::SweepAxis;
+        let list = |name: &str, text: &str| -> Result<Vec<f64>, String> {
+            text.split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(|t| t.parse::<f64>().map_err(|_| format!("{name}: '{t}' is not a number")))
+                .collect()
+        };
+        Ok(vec![
+            SweepAxis::GroundFriction(list("friction", &self.friction)?),
+            SweepAxis::KpScale(list("kp", &self.kp)?),
+            SweepAxis::KvScale(list("kv", &self.kv)?),
+            SweepAxis::DampingScale(list("damping", &self.damping)?),
+            SweepAxis::EffortScale(list("effort", &self.effort)?),
+            SweepAxis::Push { magnitudes: list("push", &self.push)?, direction: self.push_dir, at: self.push_at, duration: 0.1 },
+        ])
+    }
+}
+
+/// A sweep running on a worker thread; results arrive one by one.
+#[cfg(feature = "mujoco")]
+struct SweepJob {
+    rx: std::sync::mpsc::Receiver<Result<RunRecord, String>>,
+    total: usize,
+    received: usize,
+    /// Run ids of this sweep, to report on when it's done.
+    ids: Vec<usize>,
 }
 
 /// Stable text fingerprint of a plan snapshot.
@@ -166,6 +228,16 @@ pub(super) struct MotionEditorState {
     dlg_run: FileDialog,
     run_dialog_save: Option<usize>,
     tab: ResultTab,
+    /// Pass / fail thresholds for the ✔ / ✖ column.
+    criteria: Criteria,
+    #[cfg(feature = "mujoco")]
+    sweep_open: bool,
+    #[cfg(feature = "mujoco")]
+    sweep_form: SweepForm,
+    #[cfg(feature = "mujoco")]
+    sweep_requested: bool,
+    #[cfg(feature = "mujoco")]
+    sweep_job: Option<SweepJob>,
 }
 
 impl Default for MotionEditorState {
@@ -198,6 +270,15 @@ impl Default for MotionEditorState {
             dlg_run: FileDialog::new("dlg_motion_run"),
             run_dialog_save: None,
             tab: ResultTab::Plan,
+            criteria: Criteria::default(),
+            #[cfg(feature = "mujoco")]
+            sweep_open: false,
+            #[cfg(feature = "mujoco")]
+            sweep_form: SweepForm::default(),
+            #[cfg(feature = "mujoco")]
+            sweep_requested: false,
+            #[cfg(feature = "mujoco")]
+            sweep_job: None,
         }
     }
 }
@@ -323,6 +404,14 @@ impl ArticaraApp {
             if self.motion.recording.is_some() {
                 self.motion_record_run();
                 ui.ctx().request_repaint();
+            }
+            self.motion_sweep_window(ui.ctx());
+            if std::mem::take(&mut self.motion.sweep_requested) {
+                self.motion_start_sweep();
+            }
+            if self.motion.sweep_job.is_some() {
+                self.motion_poll_sweep();
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
     }
@@ -452,6 +541,169 @@ impl ArticaraApp {
             entry.summary.tracking.first().map_or(0.0, |t| t.1.to_degrees()),
             entry.summary.max_tilt.unwrap_or(0.0).to_degrees()
         );
+    }
+
+    #[cfg(feature = "mujoco")]
+    fn motion_sweep_window(&mut self, ctx: &egui::Context) {
+        let st = &mut self.motion;
+        if !st.sweep_open {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("🧪 Robustness sweep").open(&mut open).resizable(false).show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new(
+                    "Runs the sequence headless under nominal conditions, then with each value below \
+                     changed alone (motor torque limits enforced). Results go to the Runs table.",
+                )
+                .small(),
+            );
+            let f = &mut st.sweep_form;
+            egui::Grid::new("sweep_form").num_columns(2).show(ui, |ui| {
+                for (label, text, tip) in [
+                    ("ground μ", &mut f.friction, "Sliding friction (nominal 0.7)"),
+                    ("kp ×", &mut f.kp, "Scale on every joint's position gain"),
+                    ("kv ×", &mut f.kv, "Scale on every joint's velocity gain"),
+                    ("damping ×", &mut f.damping, "Scale on passive joint damping"),
+                    ("effort ×", &mut f.effort, "Scale on motor torque limits (weak / hot motors)"),
+                    ("push [N]", &mut f.push, "Push on the root link for 0.1 s"),
+                ] {
+                    ui.label(label).on_hover_text(tip);
+                    ui.text_edit_singleline(text);
+                    ui.end_row();
+                }
+                ui.label("push dir / at");
+                ui.horizontal(|ui| {
+                    for (name, dir) in [("+X", [1.0, 0.0, 0.0]), ("−X", [-1.0, 0.0, 0.0]), ("+Y", [0.0, 1.0, 0.0]), ("−Y", [0.0, -1.0, 0.0])] {
+                        ui.selectable_value(&mut f.push_dir, dir, name);
+                    }
+                    ui.add(egui::DragValue::new(&mut f.push_at).range(0.0..=60.0).speed(0.01).suffix(" s"));
+                });
+                ui.end_row();
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Pass if tilt ≤");
+                let mut tilt = st.criteria.max_tilt.to_degrees();
+                if ui.add(egui::DragValue::new(&mut tilt).range(1.0..=90.0).suffix("°")).changed() {
+                    st.criteria.max_tilt = tilt.to_radians();
+                }
+                ui.label("and tracking ≤");
+                let mut track = st.criteria.max_tracking.to_degrees();
+                if ui.add(egui::DragValue::new(&mut track).range(0.1..=90.0).speed(0.1).suffix("°")).changed() {
+                    st.criteria.max_tracking = track.to_radians();
+                }
+                ui.label("and no limit issues during the motion");
+            });
+            match st.sweep_form.axes() {
+                Ok(axes) => {
+                    let n = articara::motion_sim::one_at_a_time(&Default::default(), &axes).len();
+                    match &st.sweep_job {
+                        Some(job) => {
+                            ui.add(egui::ProgressBar::new(job.received as f32 / job.total.max(1) as f32).text(format!("{}/{}", job.received, job.total)));
+                        }
+                        None => {
+                            if ui.button(format!("▶ Run {n} conditions")).clicked() {
+                                st.sweep_requested = true;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    ui.colored_label(egui::Color32::LIGHT_RED, e);
+                }
+            }
+        });
+        st.sweep_open &= open;
+    }
+
+    #[cfg(feature = "mujoco")]
+    fn motion_start_sweep(&mut self) {
+        use articara::motion_sim::{RunConditions, Support, one_at_a_time, simulate};
+        let (Some(model), Some(seq_idx)) = (self.model.as_ref(), self.motion.sequence) else { return };
+        let Some(seq) = model.sequences.get(seq_idx).cloned() else { return };
+        let axes = match self.motion.sweep_form.axes() {
+            Ok(a) => a,
+            Err(e) => {
+                self.status_message = format!("Sweep: {e}");
+                return;
+            }
+        };
+        let nominal = RunConditions {
+            support: match self.motion.run_base {
+                RunBase::Ground => Support::Ground,
+                RunBase::Fixed => Support::Fixed,
+            },
+            settle: self.motion.settle,
+            ..Default::default()
+        };
+        let conds = one_at_a_time(&nominal, &axes);
+        let start_q = self.motion.start_q.clone().unwrap_or_else(|| model.joint_positions.clone());
+        let model = model.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let total = conds.len();
+        let prefix = nominal.label();
+        std::thread::spawn(move || {
+            for cond in conds {
+                // Name by what differs from nominal.
+                let label = cond.label();
+                let name = label.strip_prefix(&prefix).map(|r| r.trim_start_matches(", ").to_string()).unwrap_or(label);
+                let name = if name.is_empty() { "nominal".to_string() } else { name };
+                if tx.send(simulate(&model, &seq, &start_q, &cond, name)).is_err() {
+                    return;
+                }
+            }
+        });
+        self.motion.sweep_job = Some(SweepJob { rx, total, received: 0, ids: Vec::new() });
+        self.motion.tab = ResultTab::Runs;
+        self.status_message = format!("Sweep: running {total} conditions…");
+    }
+
+    #[cfg(feature = "mujoco")]
+    fn motion_poll_sweep(&mut self) {
+        let Some(model) = self.model.as_ref() else { return };
+        let st = &mut self.motion;
+        let Some(job) = st.sweep_job.as_mut() else { return };
+        let mut results = Vec::new();
+        while let Ok(r) = job.rx.try_recv() {
+            results.push(r);
+        }
+        job.received += results.len();
+        let mut errors = Vec::new();
+        let mut new_ids = Vec::new();
+        for r in results {
+            match r {
+                Ok(record) => {
+                    let id = st.add_run(model, record).id;
+                    if let Some(e) = st.runs.iter_mut().find(|e| e.id == id) {
+                        // Many runs: keep the plot readable.
+                        e.overlay = false;
+                    }
+                    new_ids.push(id);
+                }
+                Err(e) => errors.push(e),
+            }
+        }
+        let Some(job) = st.sweep_job.as_mut() else { return };
+        job.ids.extend(new_ids);
+        if !errors.is_empty() {
+            self.status_message = format!("Sweep: {}", errors.join("; "));
+        }
+        if job.received >= job.total {
+            let job = st.sweep_job.take().expect("checked above");
+            let fails: Vec<String> = st
+                .runs
+                .iter()
+                .filter(|r| job.ids.contains(&r.id))
+                .filter(|r| !r.summary.verdict(&st.criteria).is_empty())
+                .map(|r| r.record.name.clone())
+                .collect();
+            self.status_message = if fails.is_empty() {
+                format!("Sweep: all {} conditions pass", job.ids.len())
+            } else {
+                format!("Sweep: {}/{} pass — fails: {}", job.ids.len() - fails.len(), job.ids.len(), fails.join(", "))
+            };
+        }
     }
 
     /// Load / save run CSVs.
@@ -916,6 +1168,14 @@ impl ArticaraApp {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut st.tab, ResultTab::Plan, "Plan");
                     ui.selectable_value(&mut st.tab, ResultTab::Runs, format!("Runs ({n_runs})"));
+                    #[cfg(feature = "mujoco")]
+                    if ui
+                        .small_button("🧪 Sweep…")
+                        .on_hover_text("Run this sequence headless under varied conditions (friction, gains, motor torque, pushes)")
+                        .clicked()
+                    {
+                        st.sweep_open = true;
+                    }
                     if ui
                         .small_button("📂 Load…")
                         .on_hover_text("Load a run CSV: a saved run, or a hardware log with a time column and one column per joint")
@@ -947,7 +1207,7 @@ impl ArticaraApp {
                         ui.label("No runs yet: Run in MuJoCo, or load a CSV.");
                     }
                     ResultTab::Runs => {
-                        run_action = runs_table(ui, model, &st.runs, &seq_name, st.selected_run, &current_fp);
+                        run_action = runs_table(ui, model, &st.runs, &seq_name, st.selected_run, &current_fp, &st.criteria);
                         if let Some(run) = selected {
                             ui.separator();
                             ui.label(egui::RichText::new(format!("{} — {}", run.record.name, run.record.source)).small().weak());
@@ -1130,6 +1390,7 @@ fn runs_table(
     sequence: &str,
     selected: Option<usize>,
     current_fp: &str,
+    criteria: &Criteria,
 ) -> Option<RunAction> {
     let mut action = None;
     // Peak during the motion; ⚑ when something after it peaked higher.
@@ -1138,8 +1399,16 @@ fn runs_table(
             ui.spacing_mut().item_spacing.x = 2.0;
             match v {
                 Some((ji, r)) => {
-                    let color = if r > 1.0 { egui::Color32::LIGHT_RED } else { ui.visuals().text_color() };
-                    ui.colored_label(color, format!("{r:.2}")).on_hover_text(format!("{} (during the motion)", model.joints[ji].name));
+                    // Exactly at the limit = clamped there: the motor saturated.
+                    let saturated = (r - 1.0).abs() < 1e-3;
+                    let (color, note) = if saturated {
+                        (egui::Color32::from_rgb(240, 160, 40), " — at the limit: motor saturated")
+                    } else if r > 1.0 {
+                        (egui::Color32::LIGHT_RED, "")
+                    } else {
+                        (ui.visuals().text_color(), "")
+                    };
+                    ui.colored_label(color, format!("{r:.2}")).on_hover_text(format!("{} (during the motion){note}", model.joints[ji].name));
                 }
                 None => {
                     ui.weak("—");
@@ -1151,10 +1420,11 @@ fn runs_table(
             }
         });
     };
-    egui::ScrollArea::vertical().id_salt("motion_runs").max_height(110.0).show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt("motion_runs").max_height(150.0).show(ui, |ui| {
         egui::Grid::new("motion_runs_grid").striped(true).spacing([6.0, 2.0]).show(ui, |ui| {
             for (h, tip) in [
                 ("", ""),
+                ("", "Pass / fail against the sweep criteria (tilt, tracking, limit issues during the motion)"),
                 ("run", ""),
                 ("issues", "During the motion (+ after it ended)"),
                 ("τ/max", "Peak |torque| ÷ declared effort during the motion"),
@@ -1173,6 +1443,12 @@ fn runs_table(
                 let mut on = run.overlay;
                 if ui.checkbox(&mut on, "").on_hover_text("Overlay on the plot").changed() {
                     action = Some(RunAction::Overlay(run.id, on));
+                }
+                let why = run.summary.verdict(criteria);
+                if why.is_empty() {
+                    ui.colored_label(egui::Color32::from_rgb(110, 210, 120), "✔").on_hover_text("Passes");
+                } else {
+                    ui.colored_label(egui::Color32::LIGHT_RED, "✖").on_hover_text(why.join("\n"));
                 }
                 let stale = run.plan_fp.as_deref().is_some_and(|fp| fp != current_fp);
                 let label = format!("{}{}", run.record.name, if stale { " ⟳" } else { "" });

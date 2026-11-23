@@ -369,6 +369,21 @@ impl RunRecord {
     }
 }
 
+/// What a run must stay within to count as a pass.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Criteria {
+    /// Largest base tilt (rad) — beyond it the robot fell or nearly did.
+    pub max_tilt: f64,
+    /// Largest joint tracking error against the plan (rad).
+    pub max_tracking: f64,
+}
+
+impl Default for Criteria {
+    fn default() -> Self {
+        Self { max_tilt: 30f64.to_radians(), max_tracking: 10f64.to_radians() }
+    }
+}
+
 /// Headline numbers of a run, for comparing runs side by side.
 ///
 /// With a plan, peaks are split at the plan's end: the motion itself vs
@@ -444,6 +459,22 @@ impl RunSummary {
             max_tilt: finite(&run.tilt).and_then(|v| v.into_iter().reduce(f64::max)),
             min_base_z: finite(&run.base_z).and_then(|v| v.into_iter().reduce(f64::min)),
         }
+    }
+
+    /// Why this run fails `criteria` (empty = it passes).
+    pub fn verdict(&self, criteria: &Criteria) -> Vec<String> {
+        let mut why = Vec::new();
+        let n = self.issues_during();
+        if n > 0 {
+            why.push(format!("{n} limit issue(s) during the motion"));
+        }
+        if let Some(t) = self.max_tilt.filter(|t| *t > criteria.max_tilt) {
+            why.push(format!("tilt {:.0}° (> {:.0}°): fell or nearly", t.to_degrees(), criteria.max_tilt.to_degrees()));
+        }
+        if let Some(&(_, e, _)) = self.tracking.first().filter(|t| t.1 > criteria.max_tracking) {
+            why.push(format!("tracking error {:.1}° (> {:.1}°)", e.to_degrees(), criteria.max_tracking.to_degrees()));
+        }
+        why
     }
 
     /// Whether `issue` starts after the motion ended.
@@ -592,6 +623,14 @@ mod tests {
         assert_eq!(late.len(), 1);
         assert_eq!((late[0].joint, late[0].kind), (j1, IssueKind::Torque));
         assert_eq!(st.issues_during(), st.issues.len() - 1);
+
+        // Verdict: issues during the motion and tracking fail; tilt 0.1 rad passes.
+        let why = s.verdict(&Criteria::default());
+        assert_eq!(why.len(), 2, "{why:?}");
+        assert!(why[0].contains("limit issue"));
+        assert!(why[1].contains("tracking error 68.8°"), "{why:?}");
+        let lax = Criteria { max_tilt: 1.0, max_tracking: 2.0 };
+        assert_eq!(s.verdict(&lax).len(), 1);
 
         // Without qd / tau there are no velocity / torque numbers or issues.
         let bare = RunRecord { qd: None, tau: None, ..run };

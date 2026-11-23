@@ -59,3 +59,45 @@ fn fixed_base_does_not_move_and_push_is_reflected_in_label() {
     let (lo, hi) = z.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
     assert!(hi - lo < 1e-6, "fixed base moved {lo}..{hi}");
 }
+
+#[test]
+fn one_at_a_time_varies_each_axis_alone() {
+    use articara::motion_sim::{SweepAxis, one_at_a_time};
+    let nominal = RunConditions::default();
+    let conds = one_at_a_time(
+        &nominal,
+        &[
+            SweepAxis::GroundFriction(vec![0.4, 0.7, 1.0]),
+            SweepAxis::EffortScale(vec![0.8]),
+            SweepAxis::Push { magnitudes: vec![20.0], direction: [0.0, 2.0, 0.0], at: 0.3, duration: 0.1 },
+        ],
+    );
+    let labels: Vec<_> = conds.iter().map(RunConditions::label).collect();
+    // 0.7 is nominal friction, so it isn't repeated.
+    assert_eq!(
+        labels,
+        [
+            "MuJoCo, on ground",
+            "MuJoCo, on ground, μ 0.40",
+            "MuJoCo, on ground, μ 1.00",
+            "MuJoCo, on ground, effort×0.80",
+            "MuJoCo, on ground, push 20 N @ 0.30s",
+        ]
+    );
+    assert_eq!(conds[4].push.as_ref().unwrap().force, [0.0, 20.0, 0.0]);
+}
+
+#[test]
+fn weak_motors_are_caught_by_the_verdict() {
+    let model = namiashi();
+    let seq = jump(&model);
+    let plan = articara::motion::Trajectory::from_sequence(&model, &seq, &model.joint_positions).unwrap();
+    let criteria = articara::motion_run::Criteria::default();
+    let verdict = |cond: RunConditions| {
+        let run = simulate(&model, &seq, &model.joint_positions, &cond, "v").unwrap();
+        RunSummary::new(&model, &run, Some(&plan)).verdict(&criteria)
+    };
+    // Motors at 30 % can't hold the crouch: tracking error blows up.
+    let weak = verdict(RunConditions { effort_scale: 0.3, ..Default::default() });
+    assert!(weak.iter().any(|w| w.contains("tracking")), "{weak:?}");
+}

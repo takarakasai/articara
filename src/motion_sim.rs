@@ -113,6 +113,53 @@ impl RunConditions {
     }
 }
 
+/// One condition to vary in a sweep, with the values to try.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SweepAxis {
+    GroundFriction(Vec<f64>),
+    KpScale(Vec<f64>),
+    KvScale(Vec<f64>),
+    DampingScale(Vec<f64>),
+    EffortScale(Vec<f64>),
+    /// Push magnitudes (N) along `direction` (normalised), on the root link
+    /// at plan time `at` for `duration`.
+    Push { magnitudes: Vec<f64>, direction: [f64; 3], at: f64, duration: f64 },
+}
+
+/// One-factor-at-a-time sweep: `nominal` first, then `nominal` with each
+/// value of each axis applied alone. (A full grid grows multiplicatively;
+/// varying one factor at a time tells which one breaks the motion.)
+pub fn one_at_a_time(nominal: &RunConditions, axes: &[SweepAxis]) -> Vec<RunConditions> {
+    let mut out = vec![nominal.clone()];
+    for axis in axes {
+        let variants: Vec<RunConditions> = match axis {
+            SweepAxis::GroundFriction(v) => v.iter().map(|&x| RunConditions { ground_friction: x, ..nominal.clone() }).collect(),
+            SweepAxis::KpScale(v) => v.iter().map(|&x| RunConditions { kp_scale: x, ..nominal.clone() }).collect(),
+            SweepAxis::KvScale(v) => v.iter().map(|&x| RunConditions { kv_scale: x, ..nominal.clone() }).collect(),
+            SweepAxis::DampingScale(v) => v.iter().map(|&x| RunConditions { damping_scale: x, ..nominal.clone() }).collect(),
+            SweepAxis::EffortScale(v) => v.iter().map(|&x| RunConditions { effort_scale: x, ..nominal.clone() }).collect(),
+            SweepAxis::Push { magnitudes, direction, at, duration } => {
+                let n = (direction[0].powi(2) + direction[1].powi(2) + direction[2].powi(2)).sqrt().max(1e-12);
+                magnitudes
+                    .iter()
+                    .map(|&m| RunConditions {
+                        push: Some(Push {
+                            link: None,
+                            at: *at,
+                            force: direction.map(|d| d / n * m),
+                            duration: *duration,
+                        }),
+                        ..nominal.clone()
+                    })
+                    .collect()
+            }
+        };
+        // Skip values equal to nominal (already run).
+        out.extend(variants.into_iter().filter(|c| c != nominal));
+    }
+    out
+}
+
 /// Run `seq` from `start_q` under `cond` and record it (plan time: 0 = the
 /// sequence starts). The model is not modified.
 pub fn simulate(
