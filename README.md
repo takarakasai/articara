@@ -67,7 +67,10 @@ tooling but are treated as **lossy derivatives** of the `.misa` master.
 - **glTF 2.0 (`.glb` / `.gltf`) import & export** — exports the posed robot
   as a node hierarchy (link → joint → child link) any glTF viewer can open,
   with meshes embedded and the full `.misa` description stored in node
-  `extras`, so articara → glTF → articara is lossless. Named poses and
+  `extras`, so articara → glTF → articara is lossless. Base-colour textures
+  (PNG / JPEG) and UVs are imported, shown in the viewer and exported
+  (Collada textures too); saving a textured model as `.misa` keeps the
+  geometry but not the texture, since meshes are written as STL. Named poses and
   sequences are exported as glTF animations (`pose/<name>`,
   `sequence/<name>`) that Blender / three.js can play back. Plain glTF
   scenes (Blender, CAD exporters) import as links on fixed joints,

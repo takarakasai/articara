@@ -335,6 +335,7 @@ dependencies = [
  "env_logger",
  "glow",
  "gltf",
+ "image",
  "legged-estimation",
  "log",
  "misa-biped",
@@ -2639,6 +2640,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

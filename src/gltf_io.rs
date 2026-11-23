@@ -14,7 +14,8 @@
 //!       └─ <child link>   joint motion at the current pose
 //! ```
 //!
-//! Primitives (box / cylinder / sphere / capsule) are tessellated. The full
+//! Primitives (box / cylinder / sphere / capsule) are tessellated; mesh UVs
+//! and diffuse textures (PNG / JPEG) are written as glTF images. The full
 //! `.misa` description is embedded as JSON in the robot node's
 //! `extras.articara`, so articara → glTF → articara round-trips everything
 //! `.misa` carries (joints, limits, inertia, sensors, poses, …). Mesh
@@ -36,7 +37,10 @@
 //!   attached to its parent by a fixed joint. Non-rigid parts of node
 //!   transforms (scale / shear) are baked into the mesh vertices, and the
 //!   Y-up scene is rotated into articara's Z-up frame. Each mesh primitive
-//!   becomes one visual coloured by its material's base colour. Custom
+//!   becomes one visual coloured by its material's base colour; its
+//!   base-colour texture and UVs are kept (embedded as a `data:` URI), and
+//!   vertex colours, which a visual can't hold per vertex, are averaged
+//!   into the visual colour. Custom
 //!   properties on a node (see [`NodeProps`]) turn its joint into a
 //!   revolute / continuous / prismatic one and set limits, mass and
 //!   collision, so a robot can be assembled in Blender. Animations that
@@ -122,8 +126,14 @@ struct GltfBuilder {
     meshes: Vec<Value>,
     materials: Vec<Value>,
     nodes: Vec<Value>,
-    /// RGBA bit pattern → material index, so equal colours share a material.
-    material_cache: HashMap<[u32; 4], usize>,
+    images: Vec<Value>,
+    textures: Vec<Value>,
+    /// Texture source (data URI or file path) → texture index; `None`
+    /// records a source that couldn't be embedded.
+    texture_cache: HashMap<String, Option<usize>>,
+    /// (RGBA bit pattern, texture) → material index, so equal looks share
+    /// a material.
+    material_cache: HashMap<([u32; 4], Option<usize>), usize>,
     /// Joint index → node of the child link it moves (animation target).
     joint_child_node: HashMap<usize, usize>,
     animations: Vec<Value>,
@@ -174,10 +184,11 @@ impl GltfBuilder {
         self.accessors.len() - 1
     }
 
-    /// Float accessor of `N`-component elements (no buffer-view target, as
-    /// for animation samplers). `with_bounds` adds the min / max that
-    /// sampler inputs require.
-    fn push_floats<const N: usize>(&mut self, data: &[[f32; N]], with_bounds: bool) -> usize {
+    /// Float accessor of `N`-component elements. `target` is the buffer-view
+    /// target (`Some(ARRAY_BUFFER)` for vertex attributes, `None` for
+    /// animation samplers); `with_bounds` adds the min / max that sampler
+    /// inputs require.
+    fn push_floats<const N: usize>(&mut self, data: &[[f32; N]], target: Option<u32>, with_bounds: bool) -> usize {
         let bytes: Vec<u8> = data
             .iter()
             .flat_map(|v| v.iter().flat_map(|c| c.to_le_bytes()))
@@ -185,14 +196,15 @@ impl GltfBuilder {
         while self.bin.len() % 4 != 0 {
             self.bin.push(0);
         }
-        self.buffer_views.push(json!({
-            "buffer": 0,
-            "byteOffset": self.bin.len(),
-            "byteLength": bytes.len(),
-        }));
+        let mut view = json!({ "buffer": 0, "byteOffset": self.bin.len(), "byteLength": bytes.len() });
+        if let Some(target) = target {
+            view["target"] = json!(target);
+        }
+        self.buffer_views.push(view);
         self.bin.extend_from_slice(&bytes);
         let ty = match N {
             1 => "SCALAR",
+            2 => "VEC2",
             3 => "VEC3",
             4 => "VEC4",
             _ => unreachable!("unsupported accessor width {N}"),
@@ -231,8 +243,44 @@ impl GltfBuilder {
         self.accessors.len() - 1
     }
 
-    fn material(&mut self, rgba: [f32; 4]) -> usize {
-        let key = rgba.map(f32::to_bits);
+    /// Texture index for an image source: a `data:` URI (glTF import) or
+    /// a file path (Collada). Only PNG / JPEG can go into glTF.
+    fn texture(&mut self, source: &str) -> Option<usize> {
+        if let Some(&t) = self.texture_cache.get(source) {
+            return t;
+        }
+        let image = match source.strip_prefix("data:") {
+            Some(rest) => rest.split_once(";base64,").and_then(|(mime, b64)| {
+                let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+                Some((bytes, mime.to_string()))
+            }),
+            None => std::fs::read(source).ok().map(|bytes| (bytes, image_mime(source).to_string())),
+        }
+        .filter(|(bytes, mime)| match mime.as_str() {
+            "image/png" => bytes.starts_with(b"\x89PNG"),
+            "image/jpeg" => bytes.starts_with(&[0xFF, 0xD8]),
+            _ => false,
+        });
+        let t = image.map(|(bytes, mime)| {
+            while self.bin.len() % 4 != 0 {
+                self.bin.push(0);
+            }
+            self.buffer_views.push(json!({ "buffer": 0, "byteOffset": self.bin.len(), "byteLength": bytes.len() }));
+            self.bin.extend_from_slice(&bytes);
+            self.images.push(json!({ "bufferView": self.buffer_views.len() - 1, "mimeType": mime }));
+            self.textures.push(json!({ "source": self.images.len() - 1 }));
+            self.textures.len() - 1
+        });
+        if t.is_none() {
+            let shown: String = source.chars().take(60).collect();
+            log::warn!("glTF export: texture '{shown}' is not a readable PNG / JPEG, exporting untextured");
+        }
+        self.texture_cache.insert(source.to_string(), t);
+        t
+    }
+
+    fn material(&mut self, rgba: [f32; 4], texture: Option<usize>) -> usize {
+        let key = (rgba.map(f32::to_bits), texture);
         if let Some(&i) = self.material_cache.get(&key) {
             return i;
         }
@@ -244,6 +292,9 @@ impl GltfBuilder {
                 "roughnessFactor": 0.8,
             },
         });
+        if let Some(t) = texture {
+            mat["pbrMetallicRoughness"]["baseColorTexture"] = json!({ "index": t });
+        }
         if rgba[3] < 1.0 {
             mat["alphaMode"] = json!("BLEND");
         }
@@ -253,8 +304,10 @@ impl GltfBuilder {
         i
     }
 
-    /// Add a single-primitive mesh. Returns `None` for empty geometry.
-    fn add_mesh(&mut self, name: &str, tris: &Triangles, material: usize) -> Option<usize> {
+    /// Add a mesh coloured `rgba`: one primitive per textured part (sharing
+    /// the vertex accessors), or a single one. `textured: false` drops
+    /// textures (collision geometry). Returns `None` for empty geometry.
+    fn add_mesh(&mut self, name: &str, tris: &Triangles, rgba: [f32; 4], textured: bool) -> Option<usize> {
         if tris.positions.is_empty() {
             return None;
         }
@@ -263,11 +316,29 @@ impl GltfBuilder {
         if let Some(normals) = &tris.normals {
             attributes["NORMAL"] = json!(self.push_vec3(normals, false));
         }
-        let mut prim = json!({ "attributes": attributes, "material": material });
-        if let Some(indices) = &tris.indices {
-            prim["indices"] = json!(self.push_indices(indices));
+        if let (true, Some(uvs)) = (textured, &tris.uvs) {
+            attributes["TEXCOORD_0"] = json!(self.push_floats(uvs, Some(ARRAY_BUFFER), false));
         }
-        self.meshes.push(json!({ "name": name, "primitives": [prim] }));
+        let all: Vec<u32> = match &tris.indices {
+            Some(i) => i.clone(),
+            None => (0..tris.positions.len() as u32).collect(),
+        };
+        let parts: Vec<(std::ops::Range<usize>, Option<&str>)> = if textured && !tris.parts.is_empty() {
+            tris.parts.iter().map(|(r, t)| (r.clone(), t.as_deref())).collect()
+        } else {
+            vec![(0..all.len() / 3, None)]
+        };
+        let mut primitives = Vec::new();
+        for (range, texture) in parts {
+            let texture = texture.and_then(|t| self.texture(t));
+            let material = self.material(rgba, texture);
+            let mut prim = json!({ "attributes": attributes.clone(), "material": material });
+            if tris.indices.is_some() || range.len() * 3 != all.len() {
+                prim["indices"] = json!(self.push_indices(&all[range.start * 3..range.end * 3]));
+            }
+            primitives.push(prim);
+        }
+        self.meshes.push(json!({ "name": name, "primitives": primitives }));
         Some(self.meshes.len() - 1)
     }
 
@@ -277,13 +348,17 @@ impl GltfBuilder {
     }
 }
 
-/// Triangle soup ready for a glTF primitive. `indices: None` means
+/// Triangle soup ready for glTF primitives. `indices: None` means
 /// consecutive vertex triples; `normals: None` lets the viewer compute
-/// flat normals (allowed by the glTF spec).
+/// flat normals (allowed by the glTF spec). `uvs` are glTF-convention
+/// (top-left origin). `parts` splits the triangles by texture (triangle
+/// ranges, texture source); empty means one untextured primitive.
 struct Triangles {
     positions: Vec<[f32; 3]>,
     normals: Option<Vec<[f32; 3]>>,
+    uvs: Option<Vec<[f32; 2]>>,
     indices: Option<Vec<u32>>,
+    parts: Vec<(std::ops::Range<usize>, Option<String>)>,
 }
 
 impl Triangles {
@@ -296,7 +371,7 @@ impl Triangles {
             positions.push([v[0], v[1], v[2]]);
             normals.push([v[3], v[4], v[5]]);
         }
-        Self { positions, normals: Some(normals), indices: None }
+        Self { positions, normals: Some(normals), uvs: None, indices: None, parts: Vec::new() }
     }
 
     fn from_mesh(mesh: &MeshData) -> Self {
@@ -311,7 +386,41 @@ impl Triangles {
                 .collect()
         });
         let indices = mesh.indices.iter().flatten().copied().collect();
-        Self { positions, normals, indices: Some(indices) }
+        let uvs = (mesh.texcoords.len() == mesh.vertices.len() && !mesh.texcoords.is_empty())
+            .then(|| mesh.texcoords.iter().map(|t| [t.x as f32, 1.0 - t.y as f32]).collect());
+        let texture_of = |sm: &misarta::mesh::SubMesh| {
+            sm.material_index
+                .and_then(|i| mesh.materials.get(i))
+                .and_then(|m| m.texture_diffuse.clone())
+        };
+        // Split by sub-mesh only when a texture is involved; plain
+        // per-sub-mesh colours aren't drawn by articara either.
+        let parts = if uvs.is_some() && mesh.submeshes.iter().any(|sm| texture_of(sm).is_some()) {
+            let mut parts: Vec<_> = mesh
+                .submeshes
+                .iter()
+                .map(|sm| (sm.tri_start..sm.tri_start + sm.tri_count, texture_of(sm)))
+                .filter(|(r, _)| !r.is_empty() && r.end <= mesh.indices.len())
+                .collect();
+            // Triangles not covered by any sub-mesh stay untextured.
+            parts.sort_by_key(|(r, _)| r.start);
+            let mut gaps = Vec::new();
+            let mut next = 0;
+            for (r, _) in &parts {
+                if r.start > next {
+                    gaps.push((next..r.start, None));
+                }
+                next = next.max(r.end);
+            }
+            if next < mesh.indices.len() {
+                gaps.push((next..mesh.indices.len(), None));
+            }
+            parts.extend(gaps);
+            parts
+        } else {
+            Vec::new()
+        };
+        Self { positions, normals, uvs, indices: Some(indices), parts }
     }
 }
 
@@ -389,6 +498,10 @@ fn build_document(model: &RobotModel) -> Result<(Value, Vec<u8>), String> {
         doc["meshes"] = json!(b.meshes);
         doc["materials"] = json!(b.materials);
     }
+    if !b.textures.is_empty() {
+        doc["images"] = json!(b.images);
+        doc["textures"] = json!(b.textures);
+    }
     if !b.animations.is_empty() {
         doc["animations"] = json!(b.animations);
     }
@@ -419,8 +532,7 @@ fn export_link(
 
     for (i, vis) in link.visuals.iter().enumerate() {
         let name = format!("{}.visual_{i}", link.name);
-        let material = b.material(vis.color);
-        let Some(mesh) = b.add_mesh(&name, &geom_triangles(&vis.geometry), material) else {
+        let Some(mesh) = b.add_mesh(&name, &geom_triangles(&vis.geometry), vis.color, true) else {
             continue;
         };
         let mut node = json!({ "name": name, "mesh": mesh, "extras": geom_tag(&link.name, "visual", i) });
@@ -435,8 +547,7 @@ fn export_link(
             continue;
         }
         let name = format!("{}.collision_{i}", link.name);
-        let material = b.material([0.9, 0.5, 0.1, 0.5]);
-        if let Some(mesh) = b.add_mesh(&name, &geom_triangles(&col.geometry), material) {
+        if let Some(mesh) = b.add_mesh(&name, &geom_triangles(&col.geometry), [0.9, 0.5, 0.1, 0.5], false) {
             let node = json!({ "name": name, "mesh": mesh, "extras": geom_tag(&link.name, "collision", i) });
             collision_nodes.push(b.add_node(node));
         }
@@ -599,15 +710,15 @@ fn add_animation(model: &RobotModel, b: &mut GltfBuilder, name: &str, q_start: &
         }
     }
 
-    let input = b.push_floats(&times, true);
+    let input = b.push_floats(&times, None, true);
     let mut samplers = Vec::new();
     let mut anim_channels = Vec::new();
     for (ci, &(ji, path)) in channels.iter().enumerate() {
         let output = if path == "translation" {
             let v3: Vec<[f32; 3]> = values[ci].iter().map(|v| [v[0], v[1], v[2]]).collect();
-            b.push_floats(&v3, false)
+            b.push_floats(&v3, None, false)
         } else {
-            b.push_floats(&values[ci], false)
+            b.push_floats(&values[ci], None, false)
         };
         samplers.push(json!({ "input": input, "output": output, "interpolation": "LINEAR" }));
         anim_channels.push(json!({
@@ -659,21 +770,21 @@ pub fn import_gltf(path: &Path) -> Result<RobotModel, String> {
 /// external buffer URIs and is stored on the model.
 pub fn import_gltf_from_slice(bytes: &[u8], source_path: Option<&Path>) -> Result<RobotModel, String> {
     let gltf = gltf::Gltf::from_slice(bytes).map_err(|e| format!("Parse glTF: {e}"))?;
-    let buffers = load_buffers(&gltf, source_path.and_then(Path::parent))?;
+    let base_dir = source_path.and_then(Path::parent);
+    let buffers = load_buffers(&gltf, base_dir)?;
     let doc = &gltf.document;
+    let images = load_images(doc, &buffers, base_dir);
 
     let meta = doc.nodes().find_map(|n| {
         let mut extras = parse_extras(n.extras())?;
         extras.get_mut(META_KEY).map(Value::take)
     });
-    // articara's own animations are derived from the poses / sequences in
-    // the embedded `.misa`, so only foreign ones are worth a warning.
-    if doc.skins().next().is_some() || (meta.is_none() && doc.animations().next().is_some()) {
-        log::warn!("glTF import: skins / animations are ignored");
+    if doc.skins().next().is_some() {
+        log::warn!("glTF import: skins are ignored");
     }
     let mut model = match meta {
-        Some(meta) => import_articara(doc, &buffers, meta, source_path)?,
-        None => import_generic(doc, &buffers, source_path)?,
+        Some(meta) => import_articara(doc, &buffers, &images, meta, source_path)?,
+        None => import_generic(doc, &buffers, &images, source_path)?,
     };
     model.source_path = source_path.map(Path::to_path_buf);
     Ok(model)
@@ -719,10 +830,53 @@ fn load_buffers(gltf: &gltf::Gltf, base_dir: Option<&Path>) -> Result<Vec<Vec<u8
         .collect()
 }
 
+/// Every image of the document as a `data:` URI (`None` where it can't be
+/// read), indexed like `doc.images()`. Embedding keeps textures with the
+/// model without depending on the glTF file staying next to it.
+fn load_images(doc: &gltf::Document, buffers: &[Vec<u8>], base_dir: Option<&Path>) -> Vec<Option<String>> {
+    doc.images()
+        .map(|image| {
+            let (bytes, mime) = match image.source() {
+                gltf::image::Source::View { view, mime_type } => {
+                    let data = buffers.get(view.buffer().index())?;
+                    let range = view.offset()..view.offset() + view.length();
+                    (data.get(range)?.to_vec(), mime_type.to_string())
+                }
+                gltf::image::Source::Uri { uri, mime_type } => {
+                    if uri.starts_with("data:") {
+                        return Some(uri.to_string());
+                    }
+                    let path = base_dir.unwrap_or(Path::new(".")).join(uri);
+                    let bytes = std::fs::read(&path)
+                        .map_err(|e| log::warn!("glTF import: texture {path:?}: {e}"))
+                        .ok()?;
+                    let mime = mime_type.map(str::to_string).unwrap_or_else(|| image_mime(uri).to_string());
+                    (bytes, mime)
+                }
+            };
+            Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+        })
+        .collect()
+}
+
+/// MIME type for an image file name (glTF allows PNG and JPEG).
+fn image_mime(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else {
+        "image/png"
+    }
+}
+
 /// Read one primitive as triangles, applying `linear` to the vertices.
+/// UVs are stored bottom-left-origin (`v` flipped), the convention
+/// [`MeshData`] shares with Collada; the base-colour texture, if any,
+/// becomes the mesh's single material.
 fn primitive_mesh(
     prim: &gltf::Primitive<'_>,
     buffers: &[Vec<u8>],
+    images: &[Option<String>],
     linear: &na::Matrix3<f64>,
 ) -> Option<MeshData> {
     use gltf::mesh::Mode;
@@ -785,35 +939,83 @@ fn primitive_mesh(
         })
         .collect();
 
+    let texcoords: Vec<na::Point2<f64>> = reader
+        .read_tex_coords(0)
+        .map(|uv| uv.into_f32().map(|[u, v]| na::Point2::new(u as f64, 1.0 - v as f64)).collect())
+        .filter(|uv: &Vec<_>| uv.len() == vertices.len())
+        .unwrap_or_default();
+    let pbr = prim.material().pbr_metallic_roughness();
+    let texture = pbr
+        .base_color_texture()
+        .filter(|t| t.tex_coord() == 0 && !texcoords.is_empty())
+        .and_then(|t| images.get(t.texture().source().index()).cloned().flatten());
+    let (materials, submeshes) = match texture {
+        Some(uri) => {
+            let [r, g, b, a] = pbr.base_color_factor().map(f64::from);
+            let material = misarta::mesh::Material {
+                name: prim.material().name().unwrap_or_default().to_string(),
+                texture_diffuse: Some(uri),
+                ..misarta::mesh::Material::from_color(r, g, b, a)
+            };
+            let sub = misarta::mesh::SubMesh {
+                name: String::new(),
+                tri_start: 0,
+                tri_count: tris.len(),
+                material_index: Some(0),
+            };
+            (vec![material], vec![sub])
+        }
+        None => (Vec::new(), Vec::new()),
+    };
+
     Some(MeshData {
         vertices,
         indices: tris,
         face_normals,
         vertex_normals,
-        texcoords: Vec::new(),
-        materials: Vec::new(),
-        submeshes: Vec::new(),
+        texcoords,
+        materials,
+        submeshes,
     })
 }
 
-/// Concatenate meshes into one (indices re-based).
+/// Average `COLOR_0` of a primitive (vertex colours), if it has any.
+/// [`MeshData`] has no per-vertex colour, so it tints the visual instead.
+fn primitive_vertex_color(prim: &gltf::Primitive<'_>, buffers: &[Vec<u8>]) -> Option<[f32; 4]> {
+    let reader = prim.reader(|b| buffers.get(b.index()).map(Vec::as_slice));
+    let colors: Vec<[f32; 4]> = reader.read_colors(0)?.into_rgba_f32().collect();
+    if colors.is_empty() {
+        return None;
+    }
+    let n = colors.len() as f32;
+    Some(std::array::from_fn(|i| colors.iter().map(|c| c[i]).sum::<f32>() / n))
+}
+
+/// Concatenate meshes into one (indices re-based). UVs are kept only if
+/// every part has them; materials and sub-meshes are carried over.
 fn merge_meshes(parts: Vec<MeshData>) -> MeshData {
-    let mut parts = parts.into_iter();
-    let mut out = parts.next().unwrap_or_else(|| MeshData::from_flat_vertices_f32(&[]));
+    let all_uv = !parts.is_empty() && parts.iter().all(|m| m.texcoords.len() == m.vertices.len());
+    let all_vn = !parts.is_empty() && parts.iter().all(|m| m.vertex_normals.len() == m.vertices.len());
+    let mut out = MeshData::from_flat_vertices_f32(&[]);
     for m in parts {
         let base = out.vertices.len() as u32;
-        // Keep per-vertex normals only if every part has them.
-        if out.vertex_normals.len() == out.vertices.len() && m.vertex_normals.len() == m.vertices.len() {
-            out.vertex_normals.extend(m.vertex_normals);
-        } else {
-            out.vertex_normals.clear();
-        }
+        let tri_base = out.indices.len();
+        let mat_base = out.materials.len();
         out.vertices.extend(m.vertices);
         out.indices.extend(m.indices.iter().map(|t| t.map(|i| i + base)));
         out.face_normals.extend(m.face_normals);
-    }
-    if out.vertex_normals.len() != out.vertices.len() {
-        out.vertex_normals.clear();
+        if all_vn {
+            out.vertex_normals.extend(m.vertex_normals);
+        }
+        if all_uv {
+            out.texcoords.extend(m.texcoords);
+        }
+        out.materials.extend(m.materials);
+        out.submeshes.extend(m.submeshes.into_iter().map(|sm| misarta::mesh::SubMesh {
+            tri_start: sm.tri_start + tri_base,
+            material_index: sm.material_index.map(|i| i + mat_base),
+            ..sm
+        }));
     }
     out
 }
@@ -852,6 +1054,7 @@ fn set_slot_geometry(model: &mut RobotModel, link: &str, slot: Slot, geometry: G
 fn import_articara(
     doc: &gltf::Document,
     buffers: &[Vec<u8>],
+    images: &[Option<String>],
     meta: Value,
     source_path: Option<&Path>,
 ) -> Result<RobotModel, String> {
@@ -888,7 +1091,7 @@ fn import_articara(
         };
         let parts = mesh
             .primitives()
-            .filter_map(|p| primitive_mesh(&p, buffers, &na::Matrix3::identity()))
+            .filter_map(|p| primitive_mesh(&p, buffers, images, &na::Matrix3::identity()))
             .collect();
         meshes.insert((link.to_string(), slot), merge_meshes(parts));
     }
@@ -1099,6 +1302,7 @@ struct NodeJoint {
 
 struct GenericImport<'a> {
     buffers: &'a [Vec<u8>],
+    images: &'a [Option<String>],
     file: mn::MisaFile,
     link_names: HashSet<String>,
     joint_names: HashSet<String>,
@@ -1133,10 +1337,13 @@ impl GenericImport<'_> {
         };
         if let Some(mesh) = node.mesh() {
             for prim in mesh.primitives() {
-                let Some(data) = primitive_mesh(&prim, self.buffers, &residual) else {
+                let Some(data) = primitive_mesh(&prim, self.buffers, self.images, &residual) else {
                     continue;
                 };
-                let rgba = prim.material().pbr_metallic_roughness().base_color_factor();
+                let mut rgba = prim.material().pbr_metallic_roughness().base_color_factor();
+                if let Some(vc) = primitive_vertex_color(&prim, self.buffers) {
+                    rgba = std::array::from_fn(|i| rgba[i] * vc[i]);
+                }
                 if props.collision {
                     self.meshes.push((link_name.clone(), Slot::Collision(link.collision.len()), data.clone()));
                     link.collision.push(mn::Collision {
@@ -1210,6 +1417,7 @@ impl GenericImport<'_> {
 fn import_generic(
     doc: &gltf::Document,
     buffers: &[Vec<u8>],
+    images: &[Option<String>],
     source_path: Option<&Path>,
 ) -> Result<RobotModel, String> {
     let scene = doc
@@ -1246,6 +1454,7 @@ fn import_generic(
 
     let mut imp = GenericImport {
         buffers,
+        images,
         file,
         link_names,
         joint_names: HashSet::new(),
@@ -1839,6 +2048,70 @@ mod tests {
         posed.joint_positions = last.to_vector(&model, &model.joint_positions);
         let r = posed.compute_transforms()["arm"].rotation;
         assert!((r.angle() - PI / 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn textures_and_uvs_roundtrip() {
+        // 1×1 PNG.
+        const PNG_B64: &str =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let positions: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let uvs: [f32; 6] = [0.0, 0.0, 1.0, 0.0, 0.0, 0.25];
+        // Vertex reds 0.5 / 1.0 / 0.5.
+        let colors: [f32; 12] = [0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 1.0, 1.0, 1.0];
+        let bin: Vec<u8> = positions.iter().chain(&uvs).chain(&colors).flat_map(|f| f.to_le_bytes()).collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bin);
+        let doc = json!({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "tri", "mesh": 0 }],
+            "meshes": [{ "primitives": [{
+                "attributes": { "POSITION": 0, "TEXCOORD_0": 1, "COLOR_0": 2 }, "material": 0,
+            }] }],
+            "materials": [{ "pbrMetallicRoughness": {
+                "baseColorFactor": [1.0, 0.5, 1.0, 1.0], "baseColorTexture": { "index": 0 },
+            } }],
+            "textures": [{ "source": 0 }],
+            "images": [{ "uri": format!("data:image/png;base64,{PNG_B64}") }],
+            "accessors": [
+                { "bufferView": 0, "componentType": FLOAT, "count": 3, "type": "VEC3",
+                  "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] },
+                { "bufferView": 1, "componentType": FLOAT, "count": 3, "type": "VEC2" },
+                { "bufferView": 2, "componentType": FLOAT, "count": 3, "type": "VEC4" },
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 24 },
+                { "buffer": 0, "byteOffset": 60, "byteLength": 48 },
+            ],
+            "buffers": [{ "byteLength": bin.len(), "uri": format!("data:application/octet-stream;base64,{b64}") }],
+        });
+        let check = |model: &RobotModel| {
+            let vis = &model.links[model.link_map["tri"]].visuals[0];
+            let GeomData::Mesh { mesh, .. } = &vis.geometry else { panic!("expected mesh") };
+            // UVs stored bottom-left-origin: v' = 1 − v.
+            let v: Vec<f64> = mesh.texcoords.iter().map(|t| t.y).collect();
+            assert_eq!(v, [1.0, 1.0, 0.75]);
+            let tex = mesh.materials[0].texture_diffuse.as_deref().unwrap();
+            assert_eq!(tex, format!("data:image/png;base64,{PNG_B64}"));
+            assert_eq!(mesh.submeshes[0].material_index, Some(0));
+            vis.color
+        };
+
+        let model = import_gltf_from_slice(&serde_json::to_vec(&doc).unwrap(), None).unwrap();
+        // Base colour × mean vertex colour (R averages to 2/3).
+        let c = check(&model);
+        assert!((c[0] - 2.0 / 3.0).abs() < 1e-6 && (c[1] - 0.5).abs() < 1e-6 && c[2] == 1.0, "{c:?}");
+
+        let glb = export_glb(&model).unwrap();
+        let gltf = gltf::Gltf::from_slice(&glb).unwrap();
+        assert_eq!(gltf.images().count(), 1);
+        let tex = gltf.materials().find_map(|m| m.pbr_metallic_roughness().base_color_texture()).unwrap();
+        assert_eq!(tex.texture().source().index(), 0);
+
+        let again = import_gltf_from_slice(&glb, None).unwrap();
+        assert_eq!(check(&again), c);
     }
 
     /// Minimal hand-written glTF: a scaled parent node with a child mesh
