@@ -311,6 +311,9 @@ impl RunRecord {
                     Col::BaseZ
                 } else if *n == "tilt" {
                     Col::Tilt
+                } else if n.contains(':') {
+                    // Another signal (e.g. a hardware export's `tau_ff:`).
+                    Col::Skip
                 } else {
                     // Bare joint name: a position column.
                     Col::Q(joint_of(n))

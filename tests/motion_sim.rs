@@ -101,3 +101,33 @@ fn weak_motors_are_caught_by_the_verdict() {
     let weak = verdict(RunConditions { effort_scale: 0.3, ..Default::default() });
     assert!(weak.iter().any(|w| w.contains("tracking")), "{weak:?}");
 }
+
+#[test]
+fn export_with_recorded_feedforward_from_a_mujoco_run() {
+    use articara::motion_export::{Feedforward, HardwareExport, hardware_csv};
+    let model = namiashi();
+    let seq = jump(&model);
+    let plan = articara::motion::Trajectory::from_sequence(&model, &seq, &model.joint_positions).unwrap();
+    let run = simulate(&model, &seq, &model.joint_positions, &RunConditions::default(), "sim").unwrap();
+    let opts = HardwareExport { rate_hz: 500.0, hold_before: 0.5, hold_after: 0.5, velocity: true };
+    let csv = hardware_csv(&model, &seq.name, &plan, &opts, Feedforward::Recorded(&run));
+
+    let mut lines = csv.lines().filter(|l| !l.starts_with('#'));
+    let header: Vec<&str> = lines.next().unwrap().split(',').collect();
+    let rows: Vec<Vec<f64>> = lines.map(|l| l.split(',').map(|c| c.parse().unwrap()).collect()).collect();
+    // 0.5 + 1.0 + 0.5 s at 500 Hz.
+    assert_eq!(rows.len(), 1001);
+    let movable = articara::motion::movable_joints(&model).len();
+    assert_eq!(header.len(), 1 + 3 * movable);
+
+    // Mid-motion feedforward equals the run's recorded torque there.
+    let col = header.iter().position(|h| *h == "tau_ff:FL_calf_joint").unwrap();
+    let rc = run.column("FL_calf_joint").unwrap();
+    let k_run = run.times.iter().position(|&t| (t - 0.5).abs() < 1e-3).unwrap();
+    let row = rows.iter().position(|r| (r[0] - 1.0).abs() < 1e-9).unwrap(); // plan t = 0.5
+    let (exported, recorded) = (rows[row][col], run.tau.as_ref().unwrap()[rc][k_run]);
+    assert!((exported - recorded).abs() < 0.05, "{exported} vs {recorded}");
+    // Every feedforward respects the (enforced) torque limit.
+    let effort = model.joints[model.joint_map["FL_calf_joint"]].effort;
+    assert!(rows.iter().all(|r| r[col].abs() <= effort * 1.001));
+}

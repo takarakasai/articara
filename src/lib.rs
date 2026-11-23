@@ -16,6 +16,7 @@ pub mod mesh_ops;
 pub mod mesh_paths;
 pub mod mjcf;
 pub mod motion;
+pub mod motion_export;
 pub mod motion_run;
 /// Headless MuJoCo runs of a motion (see [`motion_sim::simulate`]).
 #[cfg(feature = "mujoco")]

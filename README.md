@@ -85,8 +85,14 @@ tooling but are treated as **lossy derivatives** of the `.misa` master.
   torque limits or a push changed one at a time, and marks each run ✔ / ✖
   against tilt / tracking / limit criteria — how far reality may drift
   before the motion breaks. Peaks after the motion ends (landing,
-  settling) are reported apart from the motion itself. Exports the joint
-  trajectory as CSV.
+  settling) are reported apart from the motion itself. **📤 Export**
+  writes the trajectory for a real controller
+  ([`src/motion_export.rs`](src/motion_export.rs)): one row per control
+  period, target positions and velocities, an optional torque feedforward
+  (plan inverse dynamics, or the torque a MuJoCo run actually applied —
+  contacts included), start / end pose holds, and each joint's kp / kv /
+  limits in the header; open plan issues and failing runs are flagged
+  before saving.
   Core in [`src/motion.rs`](src/motion.rs).
 - **Multi-format model loading** — `.misa` (native), URDF, MJCF (MuJoCo XML),
   USD, SDF. Legacy URDF + `.misarta.toml` sidecar workflows continue to work.

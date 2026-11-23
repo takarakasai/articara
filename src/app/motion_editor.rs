@@ -27,6 +27,7 @@ use eframe::egui;
 use egui_plot::{HLine, Line, LineStyle, Plot, PlotPoints, VLine};
 
 use articara::motion::{self, Issue, IssueKind, Series, Trajectory};
+use articara::motion_export::{Feedforward, HardwareExport};
 use articara::motion_run::{Criteria, PlanSnapshot, RunRecord, RunSummary};
 use misarta::trajectory::InterpolationKind;
 
@@ -159,6 +160,15 @@ struct SweepJob {
     ids: Vec<usize>,
 }
 
+/// Feedforward choice in the export window.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FfChoice {
+    None,
+    Plan,
+    /// A kept run's recorded torque (by run id).
+    Run(usize),
+}
+
 /// Stable text fingerprint of a plan snapshot.
 fn plan_fingerprint(plan: &PlanSnapshot) -> String {
     let mut poses: Vec<_> = plan.poses.iter().map(|p| format!("{}={:?}", p.name, p.angles)).collect();
@@ -206,7 +216,9 @@ pub(super) struct MotionEditorState {
     /// Joint indices shown in the plot.
     shown_joints: std::collections::BTreeSet<usize>,
     new_key_kind: InterpolationKind,
-    csv_rate_hz: f64,
+    export_open: bool,
+    export: HardwareExport,
+    export_ff: FfChoice,
     dlg_save_csv: FileDialog,
     analysis: Option<Analysis>,
     /// MuJoCo owns the joint positions this frame (preview must not write).
@@ -255,7 +267,9 @@ impl Default for MotionEditorState {
             signal: PlotSignal::Position,
             shown_joints: Default::default(),
             new_key_kind: InterpolationKind::QuinticSmooth,
-            csv_rate_hz: 100.0,
+            export_open: false,
+            export: HardwareExport::default(),
+            export_ff: FfChoice::None,
             dlg_save_csv: FileDialog::new("dlg_save_motion_csv"),
             analysis: None,
             sim_active: false,
@@ -390,6 +404,7 @@ impl ArticaraApp {
             .show_inside(ui, |ui| {
                 edit = self.motion_editor_contents(ui, &mut model);
             });
+        self.motion_export_window(ui.ctx(), &model);
         self.motion_csv_dialog(ui.ctx(), &model);
         self.motion_run_dialog(ui.ctx(), &model);
         self.model = Some(model);
@@ -949,10 +964,13 @@ impl ArticaraApp {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("💾 CSV…").on_hover_text("Export the joint trajectory (time + one column per joint, rad / m)").clicked() {
-                    st.dlg_save_csv.open("Export trajectory CSV", FileDialogMode::Save, None, &["csv"]);
+                if ui
+                    .button("📤 Export…")
+                    .on_hover_text("Export the trajectory for a real controller: its rate, target velocities, torque feedforward, hold times")
+                    .clicked()
+                {
+                    st.export_open = true;
                 }
-                ui.add(egui::DragValue::new(&mut st.csv_rate_hz).range(1.0..=2000.0).speed(10.0).suffix(" Hz"));
                 if ui.button("Start = current").on_hover_text("Use the current posture as the sequence's starting point").clicked() {
                     st.playing = false;
                     st.start_q = Some(model.joint_positions.clone());
@@ -1092,7 +1110,7 @@ impl ArticaraApp {
             ui.separator();
 
             // Results on the right; the plot takes what's left.
-            let plot_width = (ui.available_width() - 430.0).max(200.0);
+            let plot_width = (ui.available_width() - 470.0).max(200.0);
             ui.vertical(|ui| {
                 ui.set_width(plot_width);
                 if let Some(series) = series {
@@ -1308,19 +1326,119 @@ impl ArticaraApp {
         edit
     }
 
+    /// Export window: controller rate, holds, velocity / feedforward
+    /// columns, and the plan's open problems before anything is written.
+    fn motion_export_window(&mut self, ctx: &egui::Context, model: &articara::robot::RobotModel) {
+        let st = &mut self.motion;
+        if !st.export_open {
+            return;
+        }
+        let Some(seq_name) = st.sequence.and_then(|i| model.sequences.get(i)).map(|s| s.name.clone()) else {
+            st.export_open = false;
+            return;
+        };
+        let mut open = true;
+        egui::Window::new("📤 Export for hardware").open(&mut open).resizable(false).show(ctx, |ui| {
+            let e = &mut st.export;
+            egui::Grid::new("export_form").num_columns(2).show(ui, |ui| {
+                ui.label("rate");
+                ui.add(egui::DragValue::new(&mut e.rate_hz).range(1.0..=10000.0).speed(10.0).suffix(" Hz"))
+                    .on_hover_text("The controller's update rate: one row per control period");
+                ui.end_row();
+                ui.label("hold before / after");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut e.hold_before).range(0.0..=10.0).speed(0.05).suffix(" s"));
+                    ui.add(egui::DragValue::new(&mut e.hold_after).range(0.0..=10.0).speed(0.05).suffix(" s"));
+                })
+                .response
+                .on_hover_text("Hold the start pose before the motion and the end pose after it");
+                ui.end_row();
+                ui.label("columns");
+                ui.checkbox(&mut e.velocity, "target velocity (qd)");
+                ui.end_row();
+                ui.label("torque feedforward");
+                let runs: Vec<(usize, String)> = st
+                    .runs
+                    .iter()
+                    .filter(|r| r.record.sequence == seq_name && r.record.tau.is_some())
+                    .map(|r| (r.id, r.record.name.clone()))
+                    .collect();
+                if let FfChoice::Run(id) = st.export_ff {
+                    if !runs.iter().any(|(rid, _)| *rid == id) {
+                        st.export_ff = FfChoice::None;
+                    }
+                }
+                let label = match st.export_ff {
+                    FfChoice::None => "none (position only)".to_string(),
+                    FfChoice::Plan => "plan inverse dynamics".to_string(),
+                    FfChoice::Run(id) => format!("recorded: {}", runs.iter().find(|r| r.0 == id).map_or("?", |r| r.1.as_str())),
+                };
+                egui::ComboBox::from_id_salt("export_ff").selected_text(label).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut st.export_ff, FfChoice::None, "none (position only)");
+                    ui.selectable_value(&mut st.export_ff, FfChoice::Plan, "plan inverse dynamics")
+                        .on_hover_text("Fixed-base τ = M·q̈ + h: right for arms and legs in the air, not for legs carrying the body");
+                    for (id, name) in &runs {
+                        ui.selectable_value(&mut st.export_ff, FfChoice::Run(*id), format!("recorded: {name}"))
+                            .on_hover_text("Torques that run applied (MuJoCo on the ground: contacts included)");
+                    }
+                });
+                ui.end_row();
+            });
+
+            // What should give pause before this goes to a robot.
+            let plan_issues = st.analysis.as_ref().map_or(0, |a| a.issues.len());
+            if plan_issues > 0 {
+                ui.colored_label(egui::Color32::LIGHT_RED, format!("⚠ the plan has {plan_issues} limit issue(s) — see the Plan tab"));
+            }
+            if let FfChoice::Run(id) = st.export_ff {
+                if let Some(run) = st.runs.iter().find(|r| r.id == id) {
+                    let why = run.summary.verdict(&st.criteria);
+                    if !why.is_empty() {
+                        ui.colored_label(egui::Color32::LIGHT_RED, format!("⚠ {} fails: {}", run.record.name, why.join("; ")));
+                    }
+                    if run.plan_fp.as_deref().is_some_and(|fp| {
+                        st.sequence
+                            .and_then(|i| model.sequences.get(i))
+                            .is_some_and(|seq| fp != plan_fingerprint(&PlanSnapshot::capture(model, seq, st.start_q.as_deref().unwrap_or(&model.joint_positions))))
+                    }) {
+                        ui.colored_label(egui::Color32::YELLOW, format!("⟳ {} ran an older plan: its torques may not fit this one", run.record.name));
+                    }
+                }
+            }
+            if st.export_ff == FfChoice::Plan && st.run_base == RunBase::Ground {
+                ui.colored_label(egui::Color32::YELLOW, "Plan feedforward ignores ground contact; for a standing robot prefer a recorded MuJoCo run.");
+            }
+            let rows = ((st.export.hold_before + st.export.hold_after + st.analysis.as_ref().and_then(|a| a.trajectory.as_ref().ok()).map_or(0.0, |t| t.duration()))
+                * st.export.rate_hz)
+                .round() as usize
+                + 1;
+            if ui.button(format!("💾 Save CSV ({rows} rows)…")).clicked() {
+                st.dlg_save_csv.open("Export for hardware", FileDialogMode::Save, None, &["csv"]);
+            }
+        });
+        st.export_open &= open;
+    }
+
     fn motion_csv_dialog(&mut self, ctx: &egui::Context, model: &articara::robot::RobotModel) {
         if let FileDialogResult::Confirmed(path) = self.motion.dlg_save_csv.show(ctx) {
-            let result = match (self.motion.analysis.as_ref().map(|a| &a.trajectory), self.motion.start_q.as_ref()) {
-                (Some(Ok(traj)), Some(_)) => {
-                    let csv = motion::trajectory_csv(model, traj, self.motion.csv_rate_hz);
-                    let rows = csv.lines().count().saturating_sub(1);
+            let st = &self.motion;
+            let seq = st.sequence.and_then(|i| model.sequences.get(i));
+            let result = match (st.analysis.as_ref().map(|a| &a.trajectory), seq) {
+                (Some(Ok(traj)), Some(seq)) => {
+                    let ff = match st.export_ff {
+                        FfChoice::None => Feedforward::None,
+                        FfChoice::Plan => Feedforward::PlanInverseDynamics,
+                        FfChoice::Run(id) => st.runs.iter().find(|r| r.id == id).map_or(Feedforward::None, |r| Feedforward::Recorded(&r.record)),
+                    };
+                    let csv = articara::motion_export::hardware_csv(model, &seq.name, traj, &st.export, ff);
+                    let rows = csv.lines().filter(|l| !l.starts_with('#')).count().saturating_sub(1);
                     std::fs::write(&path, csv).map(|_| rows).map_err(|e| e.to_string())
                 }
                 _ => Err("no valid trajectory".to_string()),
             };
             self.status_message = match result {
-                Ok(rows) => format!("Saved trajectory ({rows} rows) → {}", path.display()),
-                Err(e) => format!("Trajectory CSV error: {e}"),
+                Ok(rows) => format!("Exported {rows} rows → {}", path.display()),
+                Err(e) => format!("Export error: {e}"),
             };
         }
     }
