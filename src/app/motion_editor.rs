@@ -939,6 +939,7 @@ impl ArticaraApp {
                             ui,
                             model,
                             &analysis.issues,
+                            &|_| false,
                             "Torques are fixed-base inverse dynamics: exact for arms and legs in the air, not for legs carrying the body.",
                         );
                     }
@@ -972,7 +973,13 @@ impl ArticaraApp {
                                             .join("\n"),
                                     );
                             }
-                            clicked = issue_list(ui, model, &s.issues, "Checked on the recorded signals (MuJoCo: applied torques, contact included).");
+                            clicked = issue_list(
+                                ui,
+                                model,
+                                &s.issues,
+                                &|i| s.after_end(i),
+                                "Checked on the recorded signals (MuJoCo: applied torques, contact included). Entries after the motion ends (settling, landing) are marked.",
+                            );
                         }
                     }
                 }
@@ -1060,7 +1067,13 @@ impl ArticaraApp {
 }
 
 /// Issue list with a summary line; returns the issue the user clicked.
-fn issue_list<'a>(ui: &mut egui::Ui, model: &articara::robot::RobotModel, issues: &'a [Issue], note: &str) -> Option<&'a Issue> {
+fn issue_list<'a>(
+    ui: &mut egui::Ui,
+    model: &articara::robot::RobotModel,
+    issues: &'a [Issue],
+    after_end: &dyn Fn(&Issue) -> bool,
+    note: &str,
+) -> Option<&'a Issue> {
     if issues.is_empty() {
         ui.colored_label(egui::Color32::from_rgb(110, 210, 120), "✔ Within limits")
             .on_hover_text(format!("Joint range, declared velocity and declared effort are respected everywhere. {note}"));
@@ -1079,11 +1092,19 @@ fn issue_list<'a>(ui: &mut egui::Ui, model: &articara::robot::RobotModel, issues
                 (IssueKind::Velocity, false) => ("m/s", 1.0),
                 (IssueKind::Position, false) => ("m", 1.0),
             };
+            let late = after_end(issue);
             let text = format!(
-                "{:.2}–{:.2}s {} {}: {:.1} (limit {:.1}) {unit}",
-                issue.t_start, issue.t_end, joint.name, issue.kind.label(), issue.peak * f, issue.limit * f
+                "{:.2}–{:.2}s {} {}: {:.1} (limit {:.1}) {unit}{}",
+                issue.t_start,
+                issue.t_end,
+                joint.name,
+                issue.kind.label(),
+                issue.peak * f,
+                issue.limit * f,
+                if late { " (after end)" } else { "" }
             );
-            if ui.add(egui::Label::new(egui::RichText::new(text).small().color(issue_color(issue.kind))).sense(egui::Sense::click())).clicked() {
+            let color = if late { issue_color(issue.kind).gamma_multiply(0.5) } else { issue_color(issue.kind) };
+            if ui.add(egui::Label::new(egui::RichText::new(text).small().color(color)).sense(egui::Sense::click())).clicked() {
                 clicked = Some(issue);
             }
         }
@@ -1111,19 +1132,41 @@ fn runs_table(
     current_fp: &str,
 ) -> Option<RunAction> {
     let mut action = None;
-    let ratio = |ui: &mut egui::Ui, v: Option<(usize, f64)>| match v {
-        Some((ji, r)) => {
-            let color = if r > 1.0 { egui::Color32::LIGHT_RED } else { ui.visuals().text_color() };
-            ui.colored_label(color, format!("{r:.2}")).on_hover_text(&model.joints[ji].name);
-        }
-        None => {
-            ui.weak("—");
-        }
+    // Peak during the motion; ⚑ when something after it peaked higher.
+    let ratio = |ui: &mut egui::Ui, v: Option<(usize, f64)>, after: Option<(usize, f64)>| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            match v {
+                Some((ji, r)) => {
+                    let color = if r > 1.0 { egui::Color32::LIGHT_RED } else { ui.visuals().text_color() };
+                    ui.colored_label(color, format!("{r:.2}")).on_hover_text(format!("{} (during the motion)", model.joints[ji].name));
+                }
+                None => {
+                    ui.weak("—");
+                }
+            }
+            if let Some((ji, ra)) = after.filter(|(_, ra)| *ra > v.map_or(0.0, |(_, r)| r) && *ra > 1.0) {
+                ui.colored_label(egui::Color32::from_rgb(200, 150, 90), "⚑")
+                    .on_hover_text(format!("After the motion ended (settling / landing): {} {ra:.2}", model.joints[ji].name));
+            }
+        });
     };
     egui::ScrollArea::vertical().id_salt("motion_runs").max_height(110.0).show(ui, |ui| {
         egui::Grid::new("motion_runs_grid").striped(true).spacing([6.0, 2.0]).show(ui, |ui| {
-            for h in ["", "run", "issues", "τ/max", "vel/max", "track°", "tilt°", ""] {
-                ui.label(egui::RichText::new(h).small().strong());
+            for (h, tip) in [
+                ("", ""),
+                ("run", ""),
+                ("issues", "During the motion (+ after it ended)"),
+                ("τ/max", "Peak |torque| ÷ declared effort during the motion"),
+                ("vel/max", "Peak |velocity| ÷ declared velocity during the motion"),
+                ("track°", "Largest |q − plan|"),
+                ("tilt°", "Largest base tilt"),
+                ("", ""),
+            ] {
+                let r = ui.label(egui::RichText::new(h).small().strong());
+                if !tip.is_empty() {
+                    r.on_hover_text(tip);
+                }
             }
             ui.end_row();
             for run in runs.iter().filter(|r| r.record.sequence == sequence) {
@@ -1140,14 +1183,21 @@ fn runs_table(
                 {
                     action = Some(RunAction::Select(run.id));
                 }
-                let n = run.summary.issues.len();
-                if n > 0 {
-                    ui.colored_label(egui::Color32::LIGHT_RED, n.to_string());
-                } else {
-                    ui.colored_label(egui::Color32::from_rgb(110, 210, 120), "0");
-                }
-                ratio(ui, run.summary.worst_torque);
-                ratio(ui, run.summary.worst_velocity);
+                let n = run.summary.issues_during();
+                let late = run.summary.issues.len() - n;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    if n > 0 {
+                        ui.colored_label(egui::Color32::LIGHT_RED, n.to_string());
+                    } else {
+                        ui.colored_label(egui::Color32::from_rgb(110, 210, 120), "0");
+                    }
+                    if late > 0 {
+                        ui.weak(format!("+{late}")).on_hover_text(format!("{late} more after the motion ended (settling / landing)"));
+                    }
+                });
+                ratio(ui, run.summary.worst_torque, run.summary.worst_torque_after);
+                ratio(ui, run.summary.worst_velocity, run.summary.worst_velocity_after);
                 match run.summary.tracking.first() {
                     Some(&(ji, e, _)) => {
                         ui.label(format!("{:.1}", e.to_degrees())).on_hover_text(&model.joints[ji].name);

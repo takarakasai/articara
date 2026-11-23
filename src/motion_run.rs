@@ -370,13 +370,25 @@ impl RunRecord {
 }
 
 /// Headline numbers of a run, for comparing runs side by side.
+///
+/// With a plan, peaks are split at the plan's end: the motion itself vs
+/// what follows it (settling, landing impacts) — the latter often holds
+/// the largest torque spike, but it's a different question than whether
+/// the motion can be tracked.
 #[derive(Clone, Debug)]
 pub struct RunSummary {
+    /// All issues, sorted by start time; see [`Self::after_end`].
     pub issues: Vec<Issue>,
-    /// Largest `|τ| / effort` and its joint (only joints declaring effort).
+    /// Plan time the motion ends at, when known.
+    pub motion_end: Option<f64>,
+    /// Largest `|τ| / effort` and its joint (only joints declaring effort)
+    /// during the motion.
     pub worst_torque: Option<(usize, f64)>,
-    /// Largest `|q̇| / velocity` and its joint.
+    /// Largest `|q̇| / velocity` and its joint during the motion.
     pub worst_velocity: Option<(usize, f64)>,
+    /// The same peaks after the motion ended.
+    pub worst_torque_after: Option<(usize, f64)>,
+    pub worst_velocity_after: Option<(usize, f64)>,
     /// `(joint, max |q − q_plan|, time)`, worst first.
     pub tracking: Vec<(usize, f64, f64)>,
     pub max_tilt: Option<f64>,
@@ -386,15 +398,30 @@ pub struct RunSummary {
 impl RunSummary {
     pub fn new(model: &RobotModel, run: &RunRecord, plan: Option<&Trajectory>) -> Self {
         let series = run.series(model);
-        let worst = |sig: &Vec<Vec<f64>>, limit: &dyn Fn(usize) -> f64| {
+        let motion_end = plan.map(Trajectory::duration);
+        // Small slack so the sample at exactly the end counts as the motion.
+        let during = |t: f64| motion_end.is_none_or(|end| t <= end + 1e-6);
+        // Peak |signal| / limit over the samples `keep` selects.
+        let worst = |sig: &Vec<Vec<f64>>, limit: &dyn Fn(usize) -> f64, keep: &dyn Fn(f64) -> bool| {
             series
                 .joints
                 .iter()
                 .enumerate()
                 .filter(|(_, ji)| limit(**ji) > 0.0)
-                .map(|(c, &ji)| (ji, sig[c].iter().filter(|v| v.is_finite()).fold(0.0, |m, v| f64::max(m, v.abs())) / limit(ji)))
+                .map(|(c, &ji)| {
+                    let peak = sig[c]
+                        .iter()
+                        .zip(&series.times)
+                        .filter(|(v, t)| v.is_finite() && keep(**t))
+                        .fold(0.0, |m, (v, _)| f64::max(m, v.abs()));
+                    (ji, peak / limit(ji))
+                })
                 .max_by(|a, b| a.1.total_cmp(&b.1))
         };
+        let effort = |ji: usize| model.joints[ji].effort;
+        let velocity = |ji: usize| model.joints[ji].velocity;
+        let after = |t: f64| !during(t);
+        let has_after = motion_end.is_some() && series.times.iter().any(|&t| after(t));
         let finite = |s: &Option<Vec<f64>>| s.as_ref().map(|v| v.iter().copied().filter(|x| x.is_finite()).collect::<Vec<_>>());
         Self {
             issues: motion::check(model, &series)
@@ -406,14 +433,27 @@ impl RunSummary {
                     IssueKind::Position => true,
                 })
                 .collect(),
-            worst_torque: run.tau.as_ref().and_then(|_| worst(&series.tau, &|ji| model.joints[ji].effort)),
-            worst_velocity: run.qd.as_ref().and_then(|_| worst(&series.qd, &|ji| model.joints[ji].velocity)),
+            motion_end,
+            worst_torque: run.tau.as_ref().and_then(|_| worst(&series.tau, &effort, &during)),
+            worst_velocity: run.qd.as_ref().and_then(|_| worst(&series.qd, &velocity, &during)),
+            worst_torque_after: run.tau.as_ref().filter(|_| has_after).and_then(|_| worst(&series.tau, &effort, &after)),
+            worst_velocity_after: run.qd.as_ref().filter(|_| has_after).and_then(|_| worst(&series.qd, &velocity, &after)),
             tracking: plan
                 .map(|p| motion::tracking_error(p, &series).into_iter().filter(|t| t.1.is_finite()).collect())
                 .unwrap_or_default(),
             max_tilt: finite(&run.tilt).and_then(|v| v.into_iter().reduce(f64::max)),
             min_base_z: finite(&run.base_z).and_then(|v| v.into_iter().reduce(f64::min)),
         }
+    }
+
+    /// Whether `issue` starts after the motion ended.
+    pub fn after_end(&self, issue: &Issue) -> bool {
+        self.motion_end.is_some_and(|end| issue.t_start > end + 1e-6)
+    }
+
+    /// Issues that start during the motion.
+    pub fn issues_during(&self) -> usize {
+        self.issues.iter().filter(|i| !self.after_end(i)).count()
     }
 }
 
@@ -531,6 +571,27 @@ mod tests {
         assert!((s.tracking[0].1 - 1.2).abs() < 1e-9);
         assert_eq!(s.max_tilt, Some(0.1));
         assert_eq!(s.min_base_z, Some(0.29));
+
+        // A landing spike after the plan's end (t = 1.0) counts separately.
+        let mut tail = run.clone();
+        tail.times.push(1.2);
+        for (c, col) in tail.q.iter_mut().enumerate() {
+            col.push([0.5, 0.0][c]);
+        }
+        for col in tail.qd.as_mut().unwrap() {
+            col.push(0.0);
+        }
+        for (c, col) in tail.tau.as_mut().unwrap().iter_mut().enumerate() {
+            col.push([9.0, 0.0][c]);
+        }
+        let st = RunSummary::new(&m, &tail, Some(&plan));
+        assert_eq!(st.motion_end, Some(1.0));
+        assert_eq!(st.worst_torque, Some((j1, 1.5)), "during the motion: unchanged");
+        assert_eq!(st.worst_torque_after, Some((j1, 4.5)));
+        let late: Vec<_> = st.issues.iter().filter(|i| st.after_end(i)).collect();
+        assert_eq!(late.len(), 1);
+        assert_eq!((late[0].joint, late[0].kind), (j1, IssueKind::Torque));
+        assert_eq!(st.issues_during(), st.issues.len() - 1);
 
         // Without qd / tau there are no velocity / torque numbers or issues.
         let bare = RunRecord { qd: None, tau: None, ..run };
