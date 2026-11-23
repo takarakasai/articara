@@ -152,7 +152,17 @@ smoke() {
     local variant=$1 target=$2 dir=$3
     local script
     script=$(mktemp)
-    if [ "$variant" = mujoco ]; then
+    local rosetta=false
+    [[ "$target" == x86_64-apple-darwin && "$(uname -m)" == arm64 ]] && rosetta=true
+    if [ "$variant" = mujoco ] && $rosetta; then
+        # Rosetta 2 can't run MuJoCo's AVX code (illegal instruction), and
+        # GitHub has no Intel macOS runners left. Starting the binary still
+        # proves dyld finds the bundled mujoco.framework (it is loaded at
+        # launch); stepping a simulation needs a real Intel Mac.
+        echo "note: Intel build under Rosetta — checking launch and bundled MuJoCo loading only" >&2
+        otool -L "$dir/$(exe "$target")" | grep -i mujoco >&2
+        echo 'print("articara ok (MuJoCo linked; not stepped under Rosetta)");' > "$script"
+    elif [ "$variant" = mujoco ]; then
         cat > "$script" <<'EOF'
 if !mj_start() { throw "mj_start failed"; }
 let n = mj_step(200);
@@ -163,7 +173,7 @@ EOF
     fi
     local run=("$dir/$(exe "$target")")
     # An Intel build on an Apple Silicon runner goes through Rosetta.
-    if [[ "$target" == x86_64-apple-darwin && "$(uname -m)" == arm64 ]]; then
+    if $rosetta; then
         run=(arch -x86_64 "${run[@]}")
     fi
     # Nothing but the bundled runtime may satisfy the MuJoCo dependency.
