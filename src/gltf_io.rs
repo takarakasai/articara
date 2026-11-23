@@ -39,7 +39,9 @@
 //!   becomes one visual coloured by its material's base colour. Custom
 //!   properties on a node (see [`NodeProps`]) turn its joint into a
 //!   revolute / continuous / prismatic one and set limits, mass and
-//!   collision, so a robot can be assembled in Blender.
+//!   collision, so a robot can be assembled in Blender. Animations that
+//!   move those joints become poses (`<animation>/<k>`, one per keyframe)
+//!   chained by a sequence `<animation>`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -1035,6 +1037,66 @@ impl NodeProps {
     }
 }
 
+/// Link frame of a node from its world matrix: the rigid part brought
+/// back to Z-up, plus the residual linear map (scale / shear) that takes
+/// node-local glTF coordinates into that frame.
+fn link_frame(world: &na::Matrix4<f64>) -> (na::Isometry3<f64>, na::Matrix3<f64>) {
+    let (rigid, residual) = split_rigid(world);
+    // A Y-up exporter (Blender) conjugates every node's frame by the axis
+    // conversion; undo it per node so link frames are Z-up again and match
+    // the object axes the author saw.
+    (
+        rigid * na::Isometry3::from_parts(na::Translation3::identity(), z_up_to_y_up()),
+        z_up_to_y_up().inverse().to_rotation_matrix().matrix() * residual,
+    )
+}
+
+/// Link frames of every node under `scene`, given each node's local matrix.
+fn scene_link_frames(
+    scene: &gltf::Scene<'_>,
+    local: &dyn Fn(&gltf::Node<'_>) -> na::Matrix4<f64>,
+) -> HashMap<usize, na::Isometry3<f64>> {
+    fn walk(
+        node: gltf::Node<'_>,
+        parent_world: &na::Matrix4<f64>,
+        local: &dyn Fn(&gltf::Node<'_>) -> na::Matrix4<f64>,
+        out: &mut HashMap<usize, na::Isometry3<f64>>,
+    ) {
+        let world = parent_world * local(&node);
+        out.insert(node.index(), link_frame(&world).0);
+        for child in node.children() {
+            walk(child, &world, local, out);
+        }
+    }
+    let mut out = HashMap::new();
+    // glTF is Y-up; articara is Z-up.
+    let y_up_to_z_up = z_up_to_y_up().inverse().to_homogeneous();
+    for node in scene.nodes() {
+        walk(node, &y_up_to_z_up, local, &mut out);
+    }
+    out
+}
+
+/// glTF's column-major matrix → nalgebra.
+fn gltf_matrix(m: [[f32; 4]; 4]) -> na::Matrix4<f64> {
+    na::Matrix4::from_fn(|r, c| m[c][r] as f64)
+}
+
+fn node_matrix(node: &gltf::Node<'_>) -> na::Matrix4<f64> {
+    gltf_matrix(node.transform().matrix())
+}
+
+/// A movable joint created from a node, kept to convert animations.
+struct NodeJoint {
+    node: usize,
+    /// Node of the parent link; `None` for the synthetic root.
+    parent_node: Option<usize>,
+    joint: String,
+    kind: mn::JointKind,
+    axis: na::Vector3<f64>,
+    origin: na::Isometry3<f64>,
+}
+
 struct GenericImport<'a> {
     buffers: &'a [Vec<u8>],
     file: mn::MisaFile,
@@ -1043,6 +1105,7 @@ struct GenericImport<'a> {
     meshes: Vec<(String, Slot, MeshData)>,
     /// Link name → mass from a `mass` custom property.
     masses: Vec<(String, f64)>,
+    joints: Vec<NodeJoint>,
 }
 
 impl GenericImport<'_> {
@@ -1051,17 +1114,11 @@ impl GenericImport<'_> {
         node: gltf::Node<'_>,
         parent_world: &na::Matrix4<f64>,
         parent_rigid: &na::Isometry3<f64>,
-        parent_link: &str,
+        parent: (&str, Option<usize>),
     ) {
-        let m = node.transform().matrix();
-        let local = na::Matrix4::from_fn(|r, c| m[c][r] as f64);
-        let world = parent_world * local;
-        let (rigid, residual) = split_rigid(&world);
-        // A Y-up exporter (Blender) conjugates every node's frame by the
-        // axis conversion; undo it per node so link frames are Z-up again
-        // and match the object axes the author saw.
-        let rigid = rigid * na::Isometry3::from_parts(na::Translation3::identity(), z_up_to_y_up());
-        let residual = z_up_to_y_up().inverse().to_rotation_matrix().matrix() * residual;
+        let (parent_link, parent_node) = parent;
+        let world = parent_world * node_matrix(&node);
+        let (rigid, residual) = link_frame(&world);
 
         let base = node.name().map(str::to_string).unwrap_or_else(|| format!("node_{}", node.index()));
         let link_name = unique_name(&base, &mut self.link_names);
@@ -1116,13 +1173,24 @@ impl GenericImport<'_> {
         };
         let joint_base = props.joint_name.clone().unwrap_or_else(|| format!("{link_name}_joint"));
         let joint_name = unique_name(&joint_base, &mut self.joint_names);
+        let origin = parent_rigid.inverse() * rigid;
+        if kind != mn::JointKind::Fixed {
+            self.joints.push(NodeJoint {
+                node: node.index(),
+                parent_node,
+                joint: joint_name.clone(),
+                kind,
+                axis,
+                origin,
+            });
+        }
         self.file.joint.push(mn::Joint {
             name: joint_name,
             kind,
             parent: parent_link.to_string(),
             child: link_name.clone(),
             axis: [axis.x, axis.y, axis.z],
-            origin: misa_origin(&(parent_rigid.inverse() * rigid)),
+            origin: misa_origin(&origin),
             limit: mn::JointLimit {
                 lower: props.joint_lower.unwrap_or(default_range.0),
                 upper: props.joint_upper.unwrap_or(default_range.1),
@@ -1133,7 +1201,7 @@ impl GenericImport<'_> {
         });
 
         for child in node.children() {
-            self.visit(child, &world, &rigid, &link_name);
+            self.visit(child, &world, &rigid, (&link_name, Some(node.index())));
         }
     }
 }
@@ -1183,11 +1251,12 @@ fn import_generic(
         joint_names: HashSet::new(),
         meshes: Vec::new(),
         masses: Vec::new(),
+        joints: Vec::new(),
     };
     // glTF is Y-up; articara is Z-up.
     let y_up_to_z_up = z_up_to_y_up().inverse().to_homogeneous();
     for node in scene.nodes() {
-        imp.visit(node, &y_up_to_z_up, &na::Isometry3::identity(), &root);
+        imp.visit(node, &y_up_to_z_up, &na::Isometry3::identity(), (&root, None));
     }
 
     let base = source_path.unwrap_or(Path::new(""));
@@ -1202,7 +1271,224 @@ fn import_generic(
         }
     }
     model.rebuild_misarta_model();
+    import_animations(doc, &scene, buffers, &imp.joints, &mut model);
     Ok(model)
+}
+
+// ─── Animations → poses / sequences ─────────────────────────────────────
+
+/// Most keyframes kept per imported animation; denser ones (baked
+/// exports) are resampled uniformly to this many.
+const MAX_ANIMATION_KEYS: usize = 120;
+
+/// One animation channel, read into memory.
+struct Track {
+    node: usize,
+    property: gltf::animation::Property,
+    interpolation: gltf::animation::Interpolation,
+    times: Vec<f32>,
+    /// Translation `[x, y, z, _]`, rotation `[x, y, z, w]` or scale
+    /// `[x, y, z, _]`. For CUBICSPLINE: `[in-tangent, value, out-tangent]`
+    /// triples, as stored.
+    values: Vec<[f32; 4]>,
+}
+
+impl Track {
+    fn read(channel: &gltf::animation::Channel<'_>, buffers: &[Vec<u8>]) -> Option<Self> {
+        use gltf::animation::util::ReadOutputs;
+        let reader = channel.reader(|b| buffers.get(b.index()).map(Vec::as_slice));
+        let times: Vec<f32> = reader.read_inputs()?.collect();
+        let values: Vec<[f32; 4]> = match reader.read_outputs()? {
+            ReadOutputs::Translations(it) | ReadOutputs::Scales(it) => it.map(|v| [v[0], v[1], v[2], 0.0]).collect(),
+            ReadOutputs::Rotations(it) => it.into_f32().collect(),
+            ReadOutputs::MorphTargetWeights(_) => return None,
+        };
+        let interpolation = channel.sampler().interpolation();
+        let per_key = if interpolation == gltf::animation::Interpolation::CubicSpline { 3 } else { 1 };
+        if times.is_empty() || values.len() != times.len() * per_key {
+            return None;
+        }
+        Some(Self {
+            node: channel.target().node().index(),
+            property: channel.target().property(),
+            interpolation,
+            times,
+            values,
+        })
+    }
+
+    /// Value at time `t` (clamped to the keyframe range).
+    fn sample(&self, t: f32) -> [f32; 4] {
+        use gltf::animation::Interpolation;
+        let cubic = self.interpolation == Interpolation::CubicSpline;
+        let value = |k: usize| if cubic { self.values[3 * k + 1] } else { self.values[k] };
+        let n = self.times.len();
+        if t <= self.times[0] {
+            return value(0);
+        }
+        if t >= self.times[n - 1] {
+            return value(n - 1);
+        }
+        let k = self.times.partition_point(|&x| x <= t) - 1;
+        let dt = self.times[k + 1] - self.times[k];
+        let u = if dt > 0.0 { (t - self.times[k]) / dt } else { 0.0 };
+        let rotation = self.property == gltf::animation::Property::Rotation;
+        let out = match self.interpolation {
+            Interpolation::Step => value(k),
+            Interpolation::Linear if rotation => {
+                let q = |v: [f32; 4]| na::UnitQuaternion::from_quaternion(na::Quaternion::new(v[3], v[0], v[1], v[2]));
+                let r = q(value(k)).slerp(&q(value(k + 1)), u);
+                let c = r.quaternion();
+                [c.i, c.j, c.k, c.w]
+            }
+            Interpolation::Linear => {
+                let (a, b) = (value(k), value(k + 1));
+                std::array::from_fn(|i| a[i] + (b[i] - a[i]) * u)
+            }
+            Interpolation::CubicSpline => {
+                let (v0, b0) = (self.values[3 * k + 1], self.values[3 * k + 2]);
+                let (a1, v1) = (self.values[3 * (k + 1)], self.values[3 * (k + 1) + 1]);
+                let (u2, u3) = (u * u, u * u * u);
+                std::array::from_fn(|i| {
+                    (2.0 * u3 - 3.0 * u2 + 1.0) * v0[i]
+                        + (u3 - 2.0 * u2 + u) * dt * b0[i]
+                        + (-2.0 * u3 + 3.0 * u2) * v1[i]
+                        + (u3 - u2) * dt * a1[i]
+                })
+            }
+        };
+        if rotation {
+            let n = out.iter().map(|c| c * c).sum::<f32>().sqrt();
+            if n > 0.0 {
+                return out.map(|c| c / n);
+            }
+        }
+        out
+    }
+}
+
+/// Turn the file's animations into articara poses and sequences: each
+/// animation's keyframe times become poses `<animation>/<k>` (joint values
+/// recovered from the animated node transforms) chained by a sequence
+/// `<animation>` with linear steps. Only nodes that became movable joints
+/// can be represented; motion of other nodes is reported and dropped.
+fn import_animations(
+    doc: &gltf::Document,
+    scene: &gltf::Scene<'_>,
+    buffers: &[Vec<u8>],
+    joints: &[NodeJoint],
+    model: &mut RobotModel,
+) {
+    let joint_nodes: HashSet<usize> = joints.iter().map(|j| j.node).collect();
+    let mut pose_names: HashSet<String> = model.poses.iter().map(|p| p.name.clone()).collect();
+    let mut seq_names: HashSet<String> = model.sequences.iter().map(|s| s.name.clone()).collect();
+
+    for (ai, anim) in doc.animations().enumerate() {
+        let tracks: Vec<Track> = anim.channels().filter_map(|c| Track::read(&c, buffers)).collect();
+        let dropped: HashSet<usize> = tracks
+            .iter()
+            .filter(|t| !joint_nodes.contains(&t.node))
+            .map(|t| t.node)
+            .collect();
+        let anim_name = anim.name().map(str::to_string).unwrap_or_else(|| format!("animation_{ai}"));
+        if !dropped.is_empty() {
+            log::warn!(
+                "glTF import: animation '{anim_name}' moves {} node(s) that are not movable joints; that motion is dropped",
+                dropped.len()
+            );
+        }
+        if !tracks.iter().any(|t| joint_nodes.contains(&t.node)) {
+            continue;
+        }
+
+        let mut times: Vec<f32> = tracks.iter().flat_map(|t| t.times.iter().copied()).collect();
+        times.sort_by(f32::total_cmp);
+        times.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+        if times.len() > MAX_ANIMATION_KEYS {
+            let (t0, t1) = (times[0], times[times.len() - 1]);
+            let n = MAX_ANIMATION_KEYS - 1;
+            times = (0..=n).map(|k| t0 + (t1 - t0) * k as f32 / n as f32).collect();
+        }
+
+        // Joint values at each keyframe time.
+        let mut keys: Vec<std::collections::BTreeMap<String, f64>> = Vec::with_capacity(times.len());
+        let mut previous: HashMap<&str, f64> = HashMap::new();
+        for &t in &times {
+            let local = |node: &gltf::Node<'_>| -> na::Matrix4<f64> {
+                let (mut tr, mut rot, mut sc) = node.transform().decomposed();
+                for track in tracks.iter().filter(|tk| tk.node == node.index()) {
+                    let v = track.sample(t);
+                    match track.property {
+                        gltf::animation::Property::Translation => tr = [v[0], v[1], v[2]],
+                        gltf::animation::Property::Rotation => rot = v,
+                        gltf::animation::Property::Scale => sc = [v[0], v[1], v[2]],
+                        gltf::animation::Property::MorphTargetWeights => {}
+                    }
+                }
+                gltf_matrix(gltf::scene::Transform::Decomposed { translation: tr, rotation: rot, scale: sc }.matrix())
+            };
+            let frames = scene_link_frames(scene, &local);
+            let mut angles = std::collections::BTreeMap::new();
+            for j in joints {
+                let (Some(child), parent) = (frames.get(&j.node), j.parent_node.map(|p| frames.get(&p))) else {
+                    continue;
+                };
+                let parent = match parent {
+                    Some(Some(p)) => *p,
+                    Some(None) => continue,
+                    None => na::Isometry3::identity(),
+                };
+                let motion = j.origin.inverse() * parent.inverse() * child;
+                let mut q = match j.kind {
+                    mn::JointKind::Prismatic => motion.translation.vector.dot(&j.axis),
+                    _ => {
+                        let r = motion.rotation.quaternion();
+                        2.0 * r.imag().dot(&j.axis).atan2(r.w)
+                    }
+                };
+                if j.kind != mn::JointKind::Prismatic {
+                    // Keep consecutive angles continuous (no ±2π jumps).
+                    q = q.rem_euclid(std::f64::consts::TAU);
+                    if q > std::f64::consts::PI {
+                        q -= std::f64::consts::TAU;
+                    }
+                    if let Some(&prev) = previous.get(j.joint.as_str()) {
+                        q += ((prev - q) / std::f64::consts::TAU).round() * std::f64::consts::TAU;
+                    }
+                }
+                previous.insert(&j.joint, q);
+                angles.insert(j.joint.clone(), q);
+            }
+            keys.push(angles);
+        }
+
+        use misarta::trajectory::InterpolationKind;
+        if keys.len() == 1 {
+            let name = unique_name(&anim_name, &mut pose_names);
+            model.poses.push(NamedPose {
+                name,
+                angles: keys.pop().unwrap_or_default(),
+                duration: 1.0,
+                kind: InterpolationKind::QuinticSmooth,
+            });
+            continue;
+        }
+        let mut steps = Vec::with_capacity(keys.len());
+        let mut t_prev = 0.0;
+        for (k, (angles, &t)) in keys.into_iter().zip(&times).enumerate() {
+            let pose_name = unique_name(&format!("{anim_name}/{k}"), &mut pose_names);
+            let duration = (t - t_prev).max(0.0) as f64;
+            t_prev = t;
+            model.poses.push(NamedPose {
+                name: pose_name.clone(),
+                angles,
+                duration,
+                kind: InterpolationKind::Linear,
+            });
+            steps.push(SequenceStep { pose_name, duration, kind: InterpolationKind::Linear });
+        }
+        model.sequences.push(Sequence { name: unique_name(&anim_name, &mut seq_names), steps });
+    }
 }
 
 // =========================================================================
@@ -1475,6 +1761,84 @@ mod tests {
         // No properties → fixed joint, no collision.
         assert!(model.links[model.link_map["arm"]].collisions.is_empty());
         assert_eq!(model.joints[model.joint_map["base_joint"]].joint_type, "fixed");
+    }
+
+    #[test]
+    fn import_animation_as_poses_and_sequence() {
+        use std::f32::consts::PI;
+        // Rotation keys about glTF Y (= the nodes' local Z-up axis Z).
+        let about_y = |deg: f32| {
+            let h = deg.to_radians() / 2.0;
+            [0.0, h.sin(), 0.0, h.cos()]
+        };
+        let times: [f32; 3] = [0.0, 0.5, 1.0];
+        let elbow: Vec<[f32; 4]> = [0.0, 45.0, 90.0].map(about_y).to_vec();
+        // Continuous spin 0 → 170 → 340°: the raw angle wraps past 180°.
+        let spin: Vec<[f32; 4]> = [0.0, 170.0, 340.0].map(about_y).to_vec();
+        let mut bin: Vec<u8> = times.iter().flat_map(|f| f.to_le_bytes()).collect();
+        for q in elbow.iter().chain(&spin) {
+            bin.extend(q.iter().flat_map(|f| f.to_le_bytes()));
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bin);
+        let doc = json!({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [
+                { "name": "base", "children": [1, 2] },
+                { "name": "arm", "translation": [0.0, 0.5, 0.0],
+                  "extras": { "joint_type": "revolute", "joint_axis": [0.0, 0.0, 1.0], "joint_name": "elbow" } },
+                { "name": "wheel", "extras": { "joint_type": "continuous", "joint_axis": [0.0, 0.0, 1.0] } },
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": FLOAT, "count": 3, "type": "SCALAR", "min": [0.0], "max": [1.0] },
+                { "bufferView": 1, "componentType": FLOAT, "count": 3, "type": "VEC4" },
+                { "bufferView": 2, "componentType": FLOAT, "count": 3, "type": "VEC4" },
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 12 },
+                { "buffer": 0, "byteOffset": 12, "byteLength": 48 },
+                { "buffer": 0, "byteOffset": 60, "byteLength": 48 },
+            ],
+            "buffers": [{ "byteLength": bin.len(), "uri": format!("data:application/octet-stream;base64,{b64}") }],
+            "animations": [{
+                "name": "wave",
+                "samplers": [
+                    { "input": 0, "output": 1, "interpolation": "LINEAR" },
+                    { "input": 0, "output": 2, "interpolation": "LINEAR" },
+                ],
+                "channels": [
+                    { "sampler": 0, "target": { "node": 1, "path": "rotation" } },
+                    { "sampler": 1, "target": { "node": 2, "path": "rotation" } },
+                ],
+            }],
+        });
+        let model = import_gltf_from_slice(&serde_json::to_vec(&doc).unwrap(), None).unwrap();
+
+        assert_eq!(model.sequences.len(), 1);
+        let seq = &model.sequences[0];
+        assert_eq!(seq.name, "wave");
+        let names: Vec<_> = seq.steps.iter().map(|s| s.pose_name.as_str()).collect();
+        assert_eq!(names, ["wave/0", "wave/1", "wave/2"]);
+        let durations: Vec<f64> = seq.steps.iter().map(|s| s.duration).collect();
+        assert_eq!(durations, [0.0, 0.5, 0.5]);
+
+        let angle = |pose: &str, joint: &str| {
+            model.poses.iter().find(|p| p.name == pose).unwrap().angles[joint] as f32
+        };
+        let deg = |d: f32| d * PI / 180.0;
+        for (k, (e, w)) in [(0.0, 0.0), (45.0, 170.0), (90.0, 340.0)].into_iter().enumerate() {
+            let pose = format!("wave/{k}");
+            assert!((angle(&pose, "elbow") - deg(e)).abs() < 1e-4, "{pose} elbow");
+            assert!((angle(&pose, "wheel_joint") - deg(w)).abs() < 1e-4, "{pose} wheel {}", angle(&pose, "wheel_joint"));
+        }
+
+        // Replaying the last pose reproduces the animated end state.
+        let last = model.poses.iter().find(|p| p.name == "wave/2").unwrap();
+        let mut posed = model.clone();
+        posed.joint_positions = last.to_vector(&model, &model.joint_positions);
+        let r = posed.compute_transforms()["arm"].rotation;
+        assert!((r.angle() - PI / 2.0).abs() < 1e-4);
     }
 
     /// Minimal hand-written glTF: a scaled parent node with a child mesh

@@ -74,7 +74,9 @@ tooling but are treated as **lossy derivatives** of the `.misa` master.
   converted from Y-up to Z-up; custom properties on a node (`joint_type`,
   `joint_axis`, `joint_lower` / `joint_upper`, `mass`, `collision`, …) make
   it a movable joint, so a robot can be assembled in Blender (export with
-  *Include → Custom Properties*). See [`src/gltf_io.rs`](src/gltf_io.rs).
+  *Include → Custom Properties*, or use the add-on in
+  [`tools/blender/`](tools/blender/)); keyframed animations of those joints
+  import as poses + a sequence. See [`src/gltf_io.rs`](src/gltf_io.rs).
 - **Rigid body dynamics** — O(n) Featherstone algorithms via [`misarta`](https://github.com/takarakasai/misarta) (kinematics, dynamics, autodiff-ready).
 - **3D viewer & GUI** — `eframe` + `glow` renderer with `egui_plot` overlays (default `gui` feature).
 - **Physics backend** — optional MuJoCo integration (`--features mujoco`, requires `mujoco-rs`).
