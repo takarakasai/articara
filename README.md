@@ -74,7 +74,13 @@ tooling but are treated as **lossy derivatives** of the `.misa` master.
   sequence and records it: the recorded q / q̇ / applied τ overlay the plan,
   the same checks run on them (physical torques, contact included), and
   per-joint tracking error and base tilt are reported — edit, run again,
-  compare, before going to hardware. Exports the joint trajectory as CSV.
+  compare, before going to hardware. Every run is kept with a snapshot of
+  the plan it executed: overlay any of them, compare them in a table
+  (issues, peak τ / velocity against the limits, tracking error, tilt),
+  restore the plan of a good one, and save / load runs as CSV
+  ([`src/motion_run.rs`](src/motion_run.rs)) — a hardware log with just
+  `time,<joint>,…` columns loads the same way. Exports the joint
+  trajectory as CSV.
   Core in [`src/motion.rs`](src/motion.rs).
 - **Multi-format model loading** — `.misa` (native), URDF, MJCF (MuJoCo XML),
   USD, SDF. Legacy URDF + `.misarta.toml` sidecar workflows continue to work.

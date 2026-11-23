@@ -16,6 +16,7 @@ pub mod mesh_ops;
 pub mod mesh_paths;
 pub mod mjcf;
 pub mod motion;
+pub mod motion_run;
 #[cfg(feature = "mujoco")]
 pub mod mujoco_sim;
 #[cfg(feature = "mujoco")]
