@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use misarta::trajectory::{InterpolationKind, PoseTransition};
+use misarta::trajectory::{InterpolationKind, Keyframe, KeyframeAnimation, PoseTransition};
 
 use crate::robot::{NamedPose, RobotModel, Sequence, SequenceStep};
 
@@ -78,6 +78,35 @@ impl Trajectory {
             }
         }
     }
+}
+
+/// Playback of `seq` for a controller (MuJoCo): holds `q_start` for
+/// `settle` seconds (lets a legged robot land and settle before moving),
+/// then follows the same keyframes as [`Trajectory`], shifted by `settle`.
+pub fn keyframe_animation(
+    model: &RobotModel,
+    seq: &Sequence,
+    q_start: &[f64],
+    settle: f64,
+) -> Result<KeyframeAnimation<f64>, String> {
+    let settle = settle.max(0.0);
+    let mut keys = vec![Keyframe::new(0.0, q_start.to_vec(), InterpolationKind::Linear)];
+    if settle > 0.0 {
+        keys.push(Keyframe::new(settle, q_start.to_vec(), InterpolationKind::Linear));
+    }
+    let mut t = settle;
+    let mut q = q_start.to_vec();
+    for step in &seq.steps {
+        let pose = model
+            .poses
+            .iter()
+            .find(|p| p.name == step.pose_name)
+            .ok_or_else(|| format!("sequence '{}': unknown pose '{}'", seq.name, step.pose_name))?;
+        q = pose.to_vector(model, &q);
+        t += step.duration.max(0.0);
+        keys.push(Keyframe::new(t, q.clone(), step.kind));
+    }
+    Ok(KeyframeAnimation::new(keys))
 }
 
 // ─── Keyframe editing (absolute time) ───────────────────────────────────
@@ -183,6 +212,52 @@ pub struct Series {
     /// Required torque / force from fixed-base inverse dynamics
     /// `τ = M(q)·q̈ + h(q, q̇)`.
     pub tau: Vec<Vec<f64>>,
+}
+
+impl Series {
+    /// Build from recorded samples (e.g. a MuJoCo trace): `q[k]`, `qd[k]`,
+    /// `tau[k]` are full joint vectors in `model.joints` order at
+    /// `times[k]`; only movable joints are kept.
+    pub fn from_samples(
+        model: &RobotModel,
+        times: Vec<f64>,
+        q: &[Vec<f64>],
+        qd: &[Vec<f64>],
+        tau: &[Vec<f64>],
+    ) -> Self {
+        let joints = movable_joints(model);
+        let column = |rows: &[Vec<f64>], ji: usize| rows.iter().map(|r| r.get(ji).copied().unwrap_or(0.0)).collect();
+        Self {
+            q: joints.iter().map(|&ji| column(q, ji)).collect(),
+            qd: joints.iter().map(|&ji| column(qd, ji)).collect(),
+            tau: joints.iter().map(|&ji| column(tau, ji)).collect(),
+            times,
+            joints,
+        }
+    }
+}
+
+/// Largest `|q_actual − q_plan|` per movable joint over the actual
+/// samples' time span: `(joint index, error, time of the error)`, worst
+/// first.
+pub fn tracking_error(plan: &Trajectory, actual: &Series) -> Vec<(usize, f64, f64)> {
+    let mut out: Vec<(usize, f64, f64)> = actual
+        .joints
+        .iter()
+        .enumerate()
+        .map(|(c, &ji)| {
+            let mut worst = (0.0, 0.0);
+            for (k, &t) in actual.times.iter().enumerate() {
+                let err = (actual.q[c][k] - plan.sample(t).0[ji]).abs();
+                if err > worst.0 {
+                    worst = (err, t);
+                }
+            }
+            (ji, worst.0, worst.1)
+        })
+        .collect();
+    out.sort_by(|a, b| b.1.total_cmp(&a.1));
+    out
 }
 
 /// Sample `traj` every `dt` seconds (always including the end), with
@@ -472,6 +547,37 @@ mod tests {
         assert!(torque.peak.abs() > 4.0, "{torque:?}");
         let tau0 = series.tau[0][0].abs();
         assert!((tau0 - 9.80665 * 0.5).abs() < 0.05, "{tau0}");
+    }
+
+    #[test]
+    fn animation_matches_trajectory_after_settle() {
+        let mut model = arm();
+        model.poses = vec![pose("a", 0.5), pose("b", -0.5)];
+        let mut s = seq(&[("a", 1.0), ("b", 2.0)]);
+        s.steps[1].kind = InterpolationKind::QuinticSmooth;
+        let traj = Trajectory::from_sequence(&model, &s, &[0.1]).unwrap();
+        let anim = keyframe_animation(&model, &s, &[0.1], 0.75).unwrap();
+        assert!((anim.duration() - 3.75).abs() < 1e-12);
+        assert!((anim.evaluate(0.5)[0] - 0.1).abs() < 1e-12, "holds the start while settling");
+        for t in [0.0, 0.3, 1.0, 1.7, 2.4, 3.0] {
+            let (a, b) = (anim.evaluate(t + 0.75)[0], traj.sample(t).0[0]);
+            assert!((a - b).abs() < 1e-9, "t={t}: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn tracking_error_against_recorded_series() {
+        let mut model = arm();
+        model.poses = vec![pose("a", 1.0)];
+        let traj = Trajectory::from_sequence(&model, &seq(&[("a", 1.0)]), &[0.0]).unwrap();
+        // "Recorded" motion lagging the plan by 0.1 rad at the end.
+        let times = vec![0.0, 0.5, 1.0];
+        let q = vec![vec![0.0], vec![0.45], vec![0.9]];
+        let zeros = vec![vec![0.0]; 3];
+        let actual = Series::from_samples(&model, times, &q, &zeros, &zeros);
+        let err = tracking_error(&traj, &actual);
+        assert_eq!(err.len(), 1);
+        assert!((err[0].1 - 0.1).abs() < 1e-9 && err[0].2 == 1.0, "{err:?}");
     }
 
     #[test]

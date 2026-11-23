@@ -68,9 +68,14 @@ tooling but are treated as **lossy derivatives** of the `.misa` master.
   dragged in time, re-captured or deleted, per-segment curves, plots of
   position / velocity / required torque per joint, and a check that lists
   every interval breaking a joint's range, declared `velocity` or declared
-  `effort` (torque from fixed-base inverse dynamics). Exports the joint
-  trajectory as CSV for running on hardware. Core in
-  [`src/motion.rs`](src/motion.rs).
+  `effort` (torque from fixed-base inverse dynamics). With `--features
+  mujoco`, **Run in MuJoCo** restarts the sim at the start pose (on the
+  ground or with the base fixed), holds it for a settle time, plays the
+  sequence and records it: the recorded q / q̇ / applied τ overlay the plan,
+  the same checks run on them (physical torques, contact included), and
+  per-joint tracking error and base tilt are reported — edit, run again,
+  compare, before going to hardware. Exports the joint trajectory as CSV.
+  Core in [`src/motion.rs`](src/motion.rs).
 - **Multi-format model loading** — `.misa` (native), URDF, MJCF (MuJoCo XML),
   USD, SDF. Legacy URDF + `.misarta.toml` sidecar workflows continue to work.
 - **glTF 2.0 (`.glb` / `.gltf`) import & export** — exports the posed robot
