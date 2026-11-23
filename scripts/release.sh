@@ -155,13 +155,22 @@ smoke() {
     local rosetta=false
     [[ "$target" == x86_64-apple-darwin && "$(uname -m)" == arm64 ]] && rosetta=true
     if [ "$variant" = mujoco ] && $rosetta; then
-        # Rosetta 2 can't run MuJoCo's AVX code (illegal instruction), and
-        # GitHub has no Intel macOS runners left. Starting the binary still
-        # proves dyld finds the bundled mujoco.framework (it is loaded at
-        # launch); stepping a simulation needs a real Intel Mac.
-        echo "note: Intel build under Rosetta — checking launch and bundled MuJoCo loading only" >&2
-        otool -L "$dir/$(exe "$target")" | grep -i mujoco >&2
-        echo 'print("articara ok (MuJoCo linked; not stepped under Rosetta)");' > "$script"
+        # MuJoCo refuses to run under Rosetta 2 ("MuJoCo cannot be run under
+        # Rosetta 2") and GitHub has no Intel macOS runners left, so check
+        # the bundling without executing: the binary's MuJoCo dependency
+        # and rpath must resolve to an x86_64 dylib inside the package.
+        echo "note: Intel build under Rosetta — MuJoCo can't run here; checking the bundle statically" >&2
+        local bin=$dir/$(exe "$target")
+        local dep
+        dep=$(otool -L "$bin" | awk '/mujoco/ {print $1}')
+        echo "  dependency: $dep" >&2
+        otool -l "$bin" | grep -A2 LC_RPATH | grep -q '@executable_path' || { echo "no @executable_path rpath" >&2; exit 1; }
+        local lib=$dir/${dep#@rpath/}
+        [ -f "$lib" ] || { echo "bundled MuJoCo missing: $lib" >&2; exit 1; }
+        lipo -archs "$lib" | grep -qw x86_64 || { echo "bundled MuJoCo lacks x86_64: $(lipo -archs "$lib")" >&2; exit 1; }
+        echo "  resolves to $lib ($(lipo -archs "$lib"))" >&2
+        echo "articara bundle ok (not executed under Rosetta)"
+        return 0
     elif [ "$variant" = mujoco ]; then
         cat > "$script" <<'EOF'
 if !mj_start() { throw "mj_start failed"; }
