@@ -11,30 +11,37 @@ use articara::robot::{GeomData, RobotModel};
 const VERTEX_SHADER: &str = r#"#version 330 core
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec2 a_uv;
 uniform mat4 u_mvp;
 uniform mat3 u_normal_mat;
 out vec3 v_normal;
+out vec2 v_uv;
 void main() {
     gl_Position = u_mvp * vec4(a_position, 1.0);
     v_normal = u_normal_mat * a_normal;
+    v_uv = a_uv;
 }
 "#;
 
 const FRAGMENT_SHADER: &str = r#"#version 330 core
 in vec3 v_normal;
+in vec2 v_uv;
 uniform vec4 u_color;
 uniform vec3 u_light_dir;
 uniform bool u_flat;
+uniform bool u_textured;
+uniform sampler2D u_texture;
 out vec4 frag_color;
 void main() {
+    vec4 base = u_textured ? u_color * texture(u_texture, v_uv) : u_color;
     if (u_flat) {
-        frag_color = u_color;
+        frag_color = base;
     } else {
         vec3 n = normalize(v_normal);
         float diff = max(dot(n, u_light_dir), 0.0);
         float ambient = 0.3;
         float light = ambient + 0.7 * diff;
-        frag_color = vec4(u_color.rgb * light, u_color.a);
+        frag_color = vec4(base.rgb * light, base.a);
     }
 }
 "#;
@@ -106,6 +113,9 @@ struct GlMeshEntry {
     vao: glow::VertexArray,
     vbo: glow::Buffer,
     num_vertices: i32,
+    /// Diffuse texture (owned by [`GlRenderer::textures`]); the colour
+    /// then tints it.
+    texture: Option<glow::Texture>,
     color: [f32; 4],
     link_name: String,
     visual_origin: na::Isometry3<f32>,
@@ -121,6 +131,10 @@ pub struct GlRenderer {
     u_color: glow::UniformLocation,
     u_light_dir: glow::UniformLocation,
     u_flat: glow::UniformLocation,
+    u_textured: glow::UniformLocation,
+    /// Uploaded textures by source (data URI or file path); `None` caches
+    /// a source that failed to decode.
+    textures: HashMap<String, Option<glow::Texture>>,
     mesh_entries: Vec<GlMeshEntry>,
     grid_vao: glow::VertexArray,
     grid_vbo: glow::Buffer,
@@ -226,6 +240,11 @@ impl GlRenderer {
             let u_color = gl.get_uniform_location(program, "u_color").unwrap();
             let u_light_dir = gl.get_uniform_location(program, "u_light_dir").unwrap();
             let u_flat = gl.get_uniform_location(program, "u_flat").unwrap();
+            let u_textured = gl.get_uniform_location(program, "u_textured").unwrap();
+            // Textures always come from unit 0.
+            gl.use_program(Some(program));
+            gl.uniform_1_i32(gl.get_uniform_location(program, "u_texture").as_ref(), 0);
+            gl.use_program(None);
 
             // Grid
             let grid_data = primitives::generate_grid(0.5, 20);
@@ -276,6 +295,8 @@ impl GlRenderer {
                 u_color,
                 u_light_dir,
                 u_flat,
+                u_textured,
+                textures: HashMap::new(),
                 mesh_entries: Vec::new(),
                 grid_vao,
                 grid_vbo,
@@ -341,6 +362,9 @@ impl GlRenderer {
                 gl.delete_vertex_array(entry.vao);
                 gl.delete_buffer(entry.vbo);
             }
+            for texture in self.textures.drain().filter_map(|(_, t)| t) {
+                gl.delete_texture(texture);
+            }
         }
 
         // Build CoM entries from link inertial data
@@ -357,6 +381,25 @@ impl GlRenderer {
 
         for link in &model.links {
             for visual in &link.visuals {
+                if let GeomData::Mesh { mesh, .. } = &visual.geometry {
+                    if let Some(parts) = textured_parts(mesh) {
+                        for (data, source) in parts {
+                            let texture = source.and_then(|src| self.texture(gl, &src));
+                            let (vao, vbo) = unsafe { upload_mesh_data_uv(gl, &data) };
+                            self.mesh_entries.push(GlMeshEntry {
+                                vao,
+                                vbo,
+                                num_vertices: (data.len() / 8) as i32,
+                                texture,
+                                color: visual.color,
+                                link_name: link.name.clone(),
+                                visual_origin: visual.origin,
+                                kind: MeshKind::Visual,
+                            });
+                        }
+                        continue;
+                    }
+                }
                 let vertex_data = match &visual.geometry {
                     GeomData::Box { hx, hy, hz } => primitives::generate_box(*hx, *hy, *hz),
                     GeomData::Cylinder {
@@ -382,6 +425,7 @@ impl GlRenderer {
                     vao,
                     vbo,
                     num_vertices,
+                    texture: None,
                     color: visual.color,
                     link_name: link.name.clone(),
                     visual_origin: visual.origin,
@@ -413,6 +457,7 @@ impl GlRenderer {
                     vao,
                     vbo,
                     num_vertices,
+                    texture: None,
                     color: [0.0, 1.0, 0.5, 0.4], // green-ish for collision
                     link_name: link.name.clone(),
                     visual_origin: col.origin,
@@ -438,6 +483,23 @@ impl GlRenderer {
 
         // Compute initial transforms
         self.transforms = model.compute_transforms();
+    }
+
+    /// GL texture for an image source (cached per source).
+    fn texture(&mut self, gl: &glow::Context, source: &str) -> Option<glow::Texture> {
+        if let Some(t) = self.textures.get(source) {
+            return *t;
+        }
+        let texture = match decode_texture(source) {
+            Ok(img) => Some(unsafe { upload_texture(gl, &img) }),
+            Err(e) => {
+                let shown: String = source.chars().take(60).collect();
+                log::warn!("texture '{shown}': {e}; drawing untextured");
+                None
+            }
+        };
+        self.textures.insert(source.to_string(), texture);
+        texture
     }
 
     /// Update link transforms (call when joint positions change).
@@ -499,8 +561,18 @@ impl GlRenderer {
                 a,
             );
 
+            if let Some(texture) = entry.texture {
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                gl.uniform_1_i32(Some(&self.u_textured), 1);
+            }
             gl.bind_vertex_array(Some(entry.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, entry.num_vertices);
+            if entry.texture.is_some() {
+                // Everything else drawn with this program is untextured.
+                gl.uniform_1_i32(Some(&self.u_textured), 0);
+                gl.bind_texture(glow::TEXTURE_2D, None);
+            }
         }
     }
 
@@ -937,6 +1009,9 @@ impl GlRenderer {
             gl.delete_buffer(self.ground_light_vbo);
             gl.delete_vertex_array(self.ground_dark_vao);
             gl.delete_buffer(self.ground_dark_vbo);
+            for texture in self.textures.values().flatten() {
+                gl.delete_texture(*texture);
+            }
             gl.delete_program(self.program);
         }
     }
@@ -1005,6 +1080,123 @@ unsafe fn upload_mesh_data(gl: &glow::Context, data: &[f32]) -> (glow::VertexArr
         gl.bind_buffer(glow::ARRAY_BUFFER, None);
 
         (vao, vbo)
+    }
+}
+
+/// Like [`upload_mesh_data`] with a UV per vertex: stride 8
+/// (`[x, y, z, nx, ny, nz, u, v]`), UV at attribute location 2.
+unsafe fn upload_mesh_data_uv(gl: &glow::Context, data: &[f32]) -> (glow::VertexArray, glow::Buffer) {
+    unsafe {
+        let vao = gl.create_vertex_array().unwrap();
+        gl.bind_vertex_array(Some(vao));
+        let vbo = gl.create_buffer().unwrap();
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+        let bytes: &[u8] =
+            std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * size_of::<f32>());
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
+
+        let f = size_of::<f32>() as i32;
+        let stride = 8 * f;
+        gl.enable_vertex_attrib_array(0);
+        gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
+        gl.enable_vertex_attrib_array(1);
+        gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, stride, 3 * f);
+        gl.enable_vertex_attrib_array(2);
+        gl.vertex_attrib_pointer_f32(2, 2, glow::FLOAT, false, stride, 6 * f);
+
+        gl.bind_vertex_array(None);
+        gl.bind_buffer(glow::ARRAY_BUFFER, None);
+        (vao, vbo)
+    }
+}
+
+/// Split a UV-mapped mesh into flat `[pos, face normal, uv]` buffers, one
+/// per sub-mesh, each with its diffuse texture source. `None` when the mesh
+/// has no UVs or no textured material (drawn the untextured way).
+fn textured_parts(mesh: &misarta::mesh::MeshData) -> Option<Vec<(Vec<f32>, Option<String>)>> {
+    if mesh.texcoords.len() != mesh.vertices.len() || mesh.texcoords.is_empty() {
+        return None;
+    }
+    let texture_of = |material: Option<usize>| {
+        material.and_then(|i| mesh.materials.get(i)).and_then(|m| m.texture_diffuse.clone())
+    };
+    if !mesh.submeshes.iter().any(|sm| texture_of(sm.material_index).is_some()) {
+        return None;
+    }
+    let flat = |tris: std::ops::Range<usize>| {
+        let mut out = Vec::with_capacity(tris.len() * 24);
+        for (tri, n) in mesh.indices[tris.clone()].iter().zip(&mesh.face_normals[tris]) {
+            for &vi in tri {
+                let (p, uv) = (&mesh.vertices[vi as usize], &mesh.texcoords[vi as usize]);
+                out.extend([p.x, p.y, p.z, n.x, n.y, n.z, uv.x, uv.y].map(|c| c as f32));
+            }
+        }
+        out
+    };
+    let mut parts = Vec::new();
+    let mut covered = vec![false; mesh.indices.len()];
+    for sm in &mesh.submeshes {
+        let range = sm.tri_start..(sm.tri_start + sm.tri_count).min(mesh.indices.len());
+        if range.is_empty() {
+            continue;
+        }
+        covered[range.clone()].iter_mut().for_each(|c| *c = true);
+        parts.push((flat(range), texture_of(sm.material_index)));
+    }
+    // Triangles outside every sub-mesh are drawn untextured.
+    let mut start = None;
+    for i in 0..=covered.len() {
+        match (covered.get(i).copied().unwrap_or(true), start) {
+            (false, None) => start = Some(i),
+            (true, Some(s)) => {
+                parts.push((flat(s..i), None));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    Some(parts)
+}
+
+/// Decode a texture source — a `data:` URI (glTF import) or a file path
+/// (Collada) — flipped so row 0 is the bottom, matching the bottom-left
+/// UV origin `MeshData` uses.
+fn decode_texture(source: &str) -> Result<image::RgbaImage, String> {
+    use base64::Engine as _;
+    let bytes = match source.strip_prefix("data:") {
+        Some(rest) => {
+            let (_, b64) = rest.split_once(";base64,").ok_or("unsupported data URI")?;
+            base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| e.to_string())?
+        }
+        None => std::fs::read(source).map_err(|e| e.to_string())?,
+    };
+    let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+    Ok(image::imageops::flip_vertical(&img.to_rgba8()))
+}
+
+unsafe fn upload_texture(gl: &glow::Context, img: &image::RgbaImage) -> glow::Texture {
+    unsafe {
+        let texture = gl.create_texture().unwrap();
+        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            glow::RGBA8 as i32,
+            img.width() as i32,
+            img.height() as i32,
+            0,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(Some(img.as_raw())),
+        );
+        gl.generate_mipmap(glow::TEXTURE_2D);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::REPEAT as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::REPEAT as i32);
+        gl.bind_texture(glow::TEXTURE_2D, None);
+        texture
     }
 }
 

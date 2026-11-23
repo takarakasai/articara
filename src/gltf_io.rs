@@ -14,13 +14,20 @@
 //!       └─ <child link>   joint motion at the current pose
 //! ```
 //!
-//! Primitives (box / cylinder / sphere / capsule) are tessellated. The full
+//! Primitives (box / cylinder / sphere / capsule) are tessellated; mesh UVs
+//! and diffuse textures (PNG / JPEG) are written as glTF images. The full
 //! `.misa` description is embedded as JSON in the robot node's
 //! `extras.articara`, so articara → glTF → articara round-trips everything
 //! `.misa` carries (joints, limits, inertia, sensors, poses, …). Mesh
 //! triangles travel in the binary buffer on nodes tagged with
 //! `extras.articara_geom`. Collision meshes live in a second, non-default
 //! scene so viewers don't draw them.
+//!
+//! Named poses and sequences are also written as glTF animations
+//! (`pose/<name>`: from the current pose to that pose; `sequence/<name>`:
+//! the steps chained from the current pose), sampled at
+//! [`ANIMATION_FPS`] so viewers can play them back. They are derived data:
+//! import ignores them and restores poses / sequences from the `.misa`.
 //!
 //! ## Import
 //!
@@ -30,7 +37,15 @@
 //!   attached to its parent by a fixed joint. Non-rigid parts of node
 //!   transforms (scale / shear) are baked into the mesh vertices, and the
 //!   Y-up scene is rotated into articara's Z-up frame. Each mesh primitive
-//!   becomes one visual coloured by its material's base colour.
+//!   becomes one visual coloured by its material's base colour; its
+//!   base-colour texture and UVs are kept (embedded as a `data:` URI), and
+//!   vertex colours, which a visual can't hold per vertex, are averaged
+//!   into the visual colour. Custom
+//!   properties on a node (see [`NodeProps`]) turn its joint into a
+//!   revolute / continuous / prismatic one and set limits, mass and
+//!   collision, so a robot can be assembled in Blender. Animations that
+//!   move those joints become poses (`<animation>/<k>`, one per keyframe)
+//!   chained by a sequence `<animation>`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -111,8 +126,17 @@ struct GltfBuilder {
     meshes: Vec<Value>,
     materials: Vec<Value>,
     nodes: Vec<Value>,
-    /// RGBA bit pattern → material index, so equal colours share a material.
-    material_cache: HashMap<[u32; 4], usize>,
+    images: Vec<Value>,
+    textures: Vec<Value>,
+    /// Texture source (data URI or file path) → texture index; `None`
+    /// records a source that couldn't be embedded.
+    texture_cache: HashMap<String, Option<usize>>,
+    /// (RGBA bit pattern, texture) → material index, so equal looks share
+    /// a material.
+    material_cache: HashMap<([u32; 4], Option<usize>), usize>,
+    /// Joint index → node of the child link it moves (animation target).
+    joint_child_node: HashMap<usize, usize>,
+    animations: Vec<Value>,
 }
 
 impl GltfBuilder {
@@ -160,6 +184,53 @@ impl GltfBuilder {
         self.accessors.len() - 1
     }
 
+    /// Float accessor of `N`-component elements. `target` is the buffer-view
+    /// target (`Some(ARRAY_BUFFER)` for vertex attributes, `None` for
+    /// animation samplers); `with_bounds` adds the min / max that sampler
+    /// inputs require.
+    fn push_floats<const N: usize>(&mut self, data: &[[f32; N]], target: Option<u32>, with_bounds: bool) -> usize {
+        let bytes: Vec<u8> = data
+            .iter()
+            .flat_map(|v| v.iter().flat_map(|c| c.to_le_bytes()))
+            .collect();
+        while self.bin.len() % 4 != 0 {
+            self.bin.push(0);
+        }
+        let mut view = json!({ "buffer": 0, "byteOffset": self.bin.len(), "byteLength": bytes.len() });
+        if let Some(target) = target {
+            view["target"] = json!(target);
+        }
+        self.buffer_views.push(view);
+        self.bin.extend_from_slice(&bytes);
+        let ty = match N {
+            1 => "SCALAR",
+            2 => "VEC2",
+            3 => "VEC3",
+            4 => "VEC4",
+            _ => unreachable!("unsupported accessor width {N}"),
+        };
+        let mut acc = json!({
+            "bufferView": self.buffer_views.len() - 1,
+            "componentType": FLOAT,
+            "count": data.len(),
+            "type": ty,
+        });
+        if with_bounds {
+            let mut min = [f32::INFINITY; N];
+            let mut max = [f32::NEG_INFINITY; N];
+            for v in data {
+                for k in 0..N {
+                    min[k] = min[k].min(v[k]);
+                    max[k] = max[k].max(v[k]);
+                }
+            }
+            acc["min"] = json!(min.as_slice());
+            acc["max"] = json!(max.as_slice());
+        }
+        self.accessors.push(acc);
+        self.accessors.len() - 1
+    }
+
     fn push_indices(&mut self, indices: &[u32]) -> usize {
         let bytes: Vec<u8> = indices.iter().flat_map(|i| i.to_le_bytes()).collect();
         let view = self.push_view(&bytes, ELEMENT_ARRAY_BUFFER);
@@ -172,8 +243,44 @@ impl GltfBuilder {
         self.accessors.len() - 1
     }
 
-    fn material(&mut self, rgba: [f32; 4]) -> usize {
-        let key = rgba.map(f32::to_bits);
+    /// Texture index for an image source: a `data:` URI (glTF import) or
+    /// a file path (Collada). Only PNG / JPEG can go into glTF.
+    fn texture(&mut self, source: &str) -> Option<usize> {
+        if let Some(&t) = self.texture_cache.get(source) {
+            return t;
+        }
+        let image = match source.strip_prefix("data:") {
+            Some(rest) => rest.split_once(";base64,").and_then(|(mime, b64)| {
+                let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+                Some((bytes, mime.to_string()))
+            }),
+            None => std::fs::read(source).ok().map(|bytes| (bytes, image_mime(source).to_string())),
+        }
+        .filter(|(bytes, mime)| match mime.as_str() {
+            "image/png" => bytes.starts_with(b"\x89PNG"),
+            "image/jpeg" => bytes.starts_with(&[0xFF, 0xD8]),
+            _ => false,
+        });
+        let t = image.map(|(bytes, mime)| {
+            while self.bin.len() % 4 != 0 {
+                self.bin.push(0);
+            }
+            self.buffer_views.push(json!({ "buffer": 0, "byteOffset": self.bin.len(), "byteLength": bytes.len() }));
+            self.bin.extend_from_slice(&bytes);
+            self.images.push(json!({ "bufferView": self.buffer_views.len() - 1, "mimeType": mime }));
+            self.textures.push(json!({ "source": self.images.len() - 1 }));
+            self.textures.len() - 1
+        });
+        if t.is_none() {
+            let shown: String = source.chars().take(60).collect();
+            log::warn!("glTF export: texture '{shown}' is not a readable PNG / JPEG, exporting untextured");
+        }
+        self.texture_cache.insert(source.to_string(), t);
+        t
+    }
+
+    fn material(&mut self, rgba: [f32; 4], texture: Option<usize>) -> usize {
+        let key = (rgba.map(f32::to_bits), texture);
         if let Some(&i) = self.material_cache.get(&key) {
             return i;
         }
@@ -185,6 +292,9 @@ impl GltfBuilder {
                 "roughnessFactor": 0.8,
             },
         });
+        if let Some(t) = texture {
+            mat["pbrMetallicRoughness"]["baseColorTexture"] = json!({ "index": t });
+        }
         if rgba[3] < 1.0 {
             mat["alphaMode"] = json!("BLEND");
         }
@@ -194,8 +304,10 @@ impl GltfBuilder {
         i
     }
 
-    /// Add a single-primitive mesh. Returns `None` for empty geometry.
-    fn add_mesh(&mut self, name: &str, tris: &Triangles, material: usize) -> Option<usize> {
+    /// Add a mesh coloured `rgba`: one primitive per textured part (sharing
+    /// the vertex accessors), or a single one. `textured: false` drops
+    /// textures (collision geometry). Returns `None` for empty geometry.
+    fn add_mesh(&mut self, name: &str, tris: &Triangles, rgba: [f32; 4], textured: bool) -> Option<usize> {
         if tris.positions.is_empty() {
             return None;
         }
@@ -204,11 +316,29 @@ impl GltfBuilder {
         if let Some(normals) = &tris.normals {
             attributes["NORMAL"] = json!(self.push_vec3(normals, false));
         }
-        let mut prim = json!({ "attributes": attributes, "material": material });
-        if let Some(indices) = &tris.indices {
-            prim["indices"] = json!(self.push_indices(indices));
+        if let (true, Some(uvs)) = (textured, &tris.uvs) {
+            attributes["TEXCOORD_0"] = json!(self.push_floats(uvs, Some(ARRAY_BUFFER), false));
         }
-        self.meshes.push(json!({ "name": name, "primitives": [prim] }));
+        let all: Vec<u32> = match &tris.indices {
+            Some(i) => i.clone(),
+            None => (0..tris.positions.len() as u32).collect(),
+        };
+        let parts: Vec<(std::ops::Range<usize>, Option<&str>)> = if textured && !tris.parts.is_empty() {
+            tris.parts.iter().map(|(r, t)| (r.clone(), t.as_deref())).collect()
+        } else {
+            vec![(0..all.len() / 3, None)]
+        };
+        let mut primitives = Vec::new();
+        for (range, texture) in parts {
+            let texture = texture.and_then(|t| self.texture(t));
+            let material = self.material(rgba, texture);
+            let mut prim = json!({ "attributes": attributes.clone(), "material": material });
+            if tris.indices.is_some() || range.len() * 3 != all.len() {
+                prim["indices"] = json!(self.push_indices(&all[range.start * 3..range.end * 3]));
+            }
+            primitives.push(prim);
+        }
+        self.meshes.push(json!({ "name": name, "primitives": primitives }));
         Some(self.meshes.len() - 1)
     }
 
@@ -218,13 +348,17 @@ impl GltfBuilder {
     }
 }
 
-/// Triangle soup ready for a glTF primitive. `indices: None` means
+/// Triangle soup ready for glTF primitives. `indices: None` means
 /// consecutive vertex triples; `normals: None` lets the viewer compute
-/// flat normals (allowed by the glTF spec).
+/// flat normals (allowed by the glTF spec). `uvs` are glTF-convention
+/// (top-left origin). `parts` splits the triangles by texture (triangle
+/// ranges, texture source); empty means one untextured primitive.
 struct Triangles {
     positions: Vec<[f32; 3]>,
     normals: Option<Vec<[f32; 3]>>,
+    uvs: Option<Vec<[f32; 2]>>,
     indices: Option<Vec<u32>>,
+    parts: Vec<(std::ops::Range<usize>, Option<String>)>,
 }
 
 impl Triangles {
@@ -237,7 +371,7 @@ impl Triangles {
             positions.push([v[0], v[1], v[2]]);
             normals.push([v[3], v[4], v[5]]);
         }
-        Self { positions, normals: Some(normals), indices: None }
+        Self { positions, normals: Some(normals), uvs: None, indices: None, parts: Vec::new() }
     }
 
     fn from_mesh(mesh: &MeshData) -> Self {
@@ -252,7 +386,41 @@ impl Triangles {
                 .collect()
         });
         let indices = mesh.indices.iter().flatten().copied().collect();
-        Self { positions, normals, indices: Some(indices) }
+        let uvs = (mesh.texcoords.len() == mesh.vertices.len() && !mesh.texcoords.is_empty())
+            .then(|| mesh.texcoords.iter().map(|t| [t.x as f32, 1.0 - t.y as f32]).collect());
+        let texture_of = |sm: &misarta::mesh::SubMesh| {
+            sm.material_index
+                .and_then(|i| mesh.materials.get(i))
+                .and_then(|m| m.texture_diffuse.clone())
+        };
+        // Split by sub-mesh only when a texture is involved; plain
+        // per-sub-mesh colours aren't drawn by articara either.
+        let parts = if uvs.is_some() && mesh.submeshes.iter().any(|sm| texture_of(sm).is_some()) {
+            let mut parts: Vec<_> = mesh
+                .submeshes
+                .iter()
+                .map(|sm| (sm.tri_start..sm.tri_start + sm.tri_count, texture_of(sm)))
+                .filter(|(r, _)| !r.is_empty() && r.end <= mesh.indices.len())
+                .collect();
+            // Triangles not covered by any sub-mesh stay untextured.
+            parts.sort_by_key(|(r, _)| r.start);
+            let mut gaps = Vec::new();
+            let mut next = 0;
+            for (r, _) in &parts {
+                if r.start > next {
+                    gaps.push((next..r.start, None));
+                }
+                next = next.max(r.end);
+            }
+            if next < mesh.indices.len() {
+                gaps.push((next..mesh.indices.len(), None));
+            }
+            parts.extend(gaps);
+            parts
+        } else {
+            Vec::new()
+        };
+        Self { positions, normals, uvs, indices: Some(indices), parts }
     }
 }
 
@@ -305,6 +473,8 @@ fn build_document(model: &RobotModel) -> Result<(Value, Vec<u8>), String> {
     let root_pose = world.get(&model.root_link).copied().unwrap_or_else(na::Isometry3::identity);
     let root_node = export_link(model, &model.root_link, &root_pose, &world, &mut b, &mut collision_nodes)?;
 
+    export_animations(model, &mut b);
+
     let mut robot = json!({
         "name": model.name,
         "children": [root_node],
@@ -327,6 +497,15 @@ fn build_document(model: &RobotModel) -> Result<(Value, Vec<u8>), String> {
     if !b.meshes.is_empty() {
         doc["meshes"] = json!(b.meshes);
         doc["materials"] = json!(b.materials);
+    }
+    if !b.textures.is_empty() {
+        doc["images"] = json!(b.images);
+        doc["textures"] = json!(b.textures);
+    }
+    if !b.animations.is_empty() {
+        doc["animations"] = json!(b.animations);
+    }
+    if !b.bin.is_empty() {
         doc["accessors"] = json!(b.accessors);
         doc["bufferViews"] = json!(b.buffer_views);
         doc["buffers"] = json!([{ "byteLength": b.bin.len() }]);
@@ -353,8 +532,7 @@ fn export_link(
 
     for (i, vis) in link.visuals.iter().enumerate() {
         let name = format!("{}.visual_{i}", link.name);
-        let material = b.material(vis.color);
-        let Some(mesh) = b.add_mesh(&name, &geom_triangles(&vis.geometry), material) else {
+        let Some(mesh) = b.add_mesh(&name, &geom_triangles(&vis.geometry), vis.color, true) else {
             continue;
         };
         let mut node = json!({ "name": name, "mesh": mesh, "extras": geom_tag(&link.name, "visual", i) });
@@ -369,23 +547,18 @@ fn export_link(
             continue;
         }
         let name = format!("{}.collision_{i}", link.name);
-        let material = b.material([0.9, 0.5, 0.1, 0.5]);
-        if let Some(mesh) = b.add_mesh(&name, &geom_triangles(&col.geometry), material) {
+        if let Some(mesh) = b.add_mesh(&name, &geom_triangles(&col.geometry), [0.9, 0.5, 0.1, 0.5], false) {
             let node = json!({ "name": name, "mesh": mesh, "extras": geom_tag(&link.name, "collision", i) });
             collision_nodes.push(b.add_node(node));
         }
     }
 
-    let parent_world = world.get(link_name).copied().unwrap_or_else(na::Isometry3::identity);
     for &ji in model.children_joints.get(link_name).map(Vec::as_slice).unwrap_or(&[]) {
         let joint = &model.joints[ji];
         let origin = joint.origin.cast::<f64>();
-        // Child link pose relative to the joint frame = joint motion at q.
-        let motion = world
-            .get(&joint.child_link)
-            .map(|w| origin.inverse() * parent_world.inverse() * w)
-            .unwrap_or_else(na::Isometry3::identity);
+        let motion = joint_motion(model, ji, world);
         let child_idx = export_link(model, &joint.child_link, &motion, world, b, collision_nodes)?;
+        b.joint_child_node.insert(ji, child_idx);
         let mut jnode = json!({ "name": joint.name, "children": [child_idx] });
         set_trs(&mut jnode, &origin);
         children.push(b.add_node(jnode));
@@ -397,6 +570,163 @@ fn export_link(
     }
     set_trs(&mut node, pose);
     Ok(b.add_node(node))
+}
+
+/// Child-link pose relative to joint `ji`'s frame (= the joint motion at
+/// the configuration `world` was computed for).
+fn joint_motion(
+    model: &RobotModel,
+    ji: usize,
+    world: &HashMap<String, na::Isometry3<f64>>,
+) -> na::Isometry3<f64> {
+    let joint = &model.joints[ji];
+    match (world.get(&joint.parent_link), world.get(&joint.child_link)) {
+        (Some(p), Some(c)) => joint.origin.cast::<f64>().inverse() * p.inverse() * c,
+        _ => na::Isometry3::identity(),
+    }
+}
+
+/// Sampling rate of exported animations. Samples are joined with glTF
+/// `LINEAR` interpolation, so the smooth (cubic / quintic) profiles are
+/// reproduced closely without the viewer knowing about them.
+const ANIMATION_FPS: f64 = 30.0;
+
+/// One joint-space segment of an exported animation.
+struct Segment {
+    q_end: Vec<f64>,
+    duration: f64,
+    kind: misarta::trajectory::InterpolationKind,
+}
+
+/// Emit one glTF animation per named pose (a transition from the current
+/// pose) and per sequence (its steps chained from the current pose), so
+/// viewers such as Blender or three.js can play them back.
+fn export_animations(model: &RobotModel, b: &mut GltfBuilder) {
+    let current = model.joint_positions.clone();
+    for pose in &model.poses {
+        let segment = Segment {
+            q_end: pose.to_vector(model, &current),
+            duration: pose.duration,
+            kind: pose.kind,
+        };
+        add_animation(model, b, &format!("pose/{}", pose.name), &current, &[segment]);
+    }
+    for seq in &model.sequences {
+        let mut q = current.clone();
+        let mut segments = Vec::new();
+        for step in &seq.steps {
+            let Some(pose) = model.poses.iter().find(|p| p.name == step.pose_name) else {
+                log::warn!(
+                    "glTF export: sequence '{}' references unknown pose '{}', step skipped",
+                    seq.name,
+                    step.pose_name
+                );
+                continue;
+            };
+            let q_end = pose.to_vector(model, &q);
+            segments.push(Segment { q_end: q_end.clone(), duration: step.duration, kind: step.kind });
+            q = q_end;
+        }
+        add_animation(model, b, &format!("sequence/{}", seq.name), &current, &segments);
+    }
+}
+
+fn add_animation(model: &RobotModel, b: &mut GltfBuilder, name: &str, q_start: &[f64], segments: &[Segment]) {
+    // Movable joints and the node property each one drives.
+    let channels: Vec<(usize, &'static str)> = model
+        .joints
+        .iter()
+        .enumerate()
+        .filter(|(ji, _)| b.joint_child_node.contains_key(ji))
+        .flat_map(|(ji, j)| match j.joint_type.as_str() {
+            "fixed" => vec![],
+            "prismatic" => vec![(ji, "translation")],
+            "revolute" | "continuous" => vec![(ji, "rotation")],
+            _ => vec![(ji, "translation"), (ji, "rotation")],
+        })
+        .collect();
+    if channels.is_empty() {
+        return;
+    }
+
+    // Sample the joint trajectory: t = 0, then each segment at the fixed
+    // rate including its end point.
+    let mut samples: Vec<(f64, Vec<f64>)> = vec![(0.0, q_start.to_vec())];
+    let mut t0 = 0.0;
+    let mut q0 = q_start.to_vec();
+    for seg in segments {
+        let duration = seg.duration.max(0.0);
+        let transition =
+            misarta::trajectory::PoseTransition::new(q0.clone(), seg.q_end.clone(), duration, seg.kind);
+        let n = ((duration * ANIMATION_FPS).ceil() as usize).max(1);
+        for k in 1..=n {
+            let t = duration * k as f64 / n as f64;
+            samples.push((t0 + t, transition.evaluate(t)));
+        }
+        t0 += duration;
+        q0 = seg.q_end.clone();
+    }
+
+    // Through FK so mimic joints and joint conventions match the viewport.
+    let mut posed = model.clone();
+    if posed.misarta_cache.is_none() {
+        posed.rebuild_misarta_model();
+    }
+    let mut times = Vec::with_capacity(samples.len());
+    let mut values: Vec<Vec<[f32; 4]>> = vec![Vec::with_capacity(samples.len()); channels.len()];
+    for (t, q) in &samples {
+        posed.joint_positions = q.clone();
+        posed.enforce_mimic();
+        let world: HashMap<String, na::Isometry3<f64>> = posed
+            .compute_transforms()
+            .into_iter()
+            .map(|(name, iso)| (name, iso.cast::<f64>()))
+            .collect();
+        times.push([*t as f32]);
+        for (ci, &(ji, path)) in channels.iter().enumerate() {
+            let m = joint_motion(model, ji, &world);
+            values[ci].push(match path {
+                "translation" => {
+                    let v = m.translation.vector;
+                    [v.x as f32, v.y as f32, v.z as f32, 0.0]
+                }
+                _ => {
+                    let q = m.rotation.quaternion();
+                    [q.i as f32, q.j as f32, q.k as f32, q.w as f32]
+                }
+            });
+        }
+    }
+    // Keep consecutive quaternions in the same hemisphere so LINEAR (slerp)
+    // takes the short way round.
+    for (ci, &(_, path)) in channels.iter().enumerate() {
+        if path == "rotation" {
+            for k in 1..values[ci].len() {
+                let (prev, cur) = (values[ci][k - 1], values[ci][k]);
+                if prev.iter().zip(&cur).map(|(a, b)| a * b).sum::<f32>() < 0.0 {
+                    values[ci][k] = cur.map(|c| -c);
+                }
+            }
+        }
+    }
+
+    let input = b.push_floats(&times, None, true);
+    let mut samplers = Vec::new();
+    let mut anim_channels = Vec::new();
+    for (ci, &(ji, path)) in channels.iter().enumerate() {
+        let output = if path == "translation" {
+            let v3: Vec<[f32; 3]> = values[ci].iter().map(|v| [v[0], v[1], v[2]]).collect();
+            b.push_floats(&v3, None, false)
+        } else {
+            b.push_floats(&values[ci], None, false)
+        };
+        samplers.push(json!({ "input": input, "output": output, "interpolation": "LINEAR" }));
+        anim_channels.push(json!({
+            "sampler": samplers.len() - 1,
+            "target": { "node": b.joint_child_node[&ji], "path": path },
+        }));
+    }
+    b.animations.push(json!({ "name": name, "channels": anim_channels, "samplers": samplers }));
 }
 
 /// Pack a glTF JSON document and binary buffer into a GLB container.
@@ -440,20 +770,21 @@ pub fn import_gltf(path: &Path) -> Result<RobotModel, String> {
 /// external buffer URIs and is stored on the model.
 pub fn import_gltf_from_slice(bytes: &[u8], source_path: Option<&Path>) -> Result<RobotModel, String> {
     let gltf = gltf::Gltf::from_slice(bytes).map_err(|e| format!("Parse glTF: {e}"))?;
-    let buffers = load_buffers(&gltf, source_path.and_then(Path::parent))?;
+    let base_dir = source_path.and_then(Path::parent);
+    let buffers = load_buffers(&gltf, base_dir)?;
     let doc = &gltf.document;
-
-    if doc.skins().next().is_some() || doc.animations().next().is_some() {
-        log::warn!("glTF import: skins / animations are ignored");
-    }
+    let images = load_images(doc, &buffers, base_dir);
 
     let meta = doc.nodes().find_map(|n| {
         let mut extras = parse_extras(n.extras())?;
         extras.get_mut(META_KEY).map(Value::take)
     });
+    if doc.skins().next().is_some() {
+        log::warn!("glTF import: skins are ignored");
+    }
     let mut model = match meta {
-        Some(meta) => import_articara(doc, &buffers, meta, source_path)?,
-        None => import_generic(doc, &buffers, source_path)?,
+        Some(meta) => import_articara(doc, &buffers, &images, meta, source_path)?,
+        None => import_generic(doc, &buffers, &images, source_path)?,
     };
     model.source_path = source_path.map(Path::to_path_buf);
     Ok(model)
@@ -499,10 +830,53 @@ fn load_buffers(gltf: &gltf::Gltf, base_dir: Option<&Path>) -> Result<Vec<Vec<u8
         .collect()
 }
 
+/// Every image of the document as a `data:` URI (`None` where it can't be
+/// read), indexed like `doc.images()`. Embedding keeps textures with the
+/// model without depending on the glTF file staying next to it.
+fn load_images(doc: &gltf::Document, buffers: &[Vec<u8>], base_dir: Option<&Path>) -> Vec<Option<String>> {
+    doc.images()
+        .map(|image| {
+            let (bytes, mime) = match image.source() {
+                gltf::image::Source::View { view, mime_type } => {
+                    let data = buffers.get(view.buffer().index())?;
+                    let range = view.offset()..view.offset() + view.length();
+                    (data.get(range)?.to_vec(), mime_type.to_string())
+                }
+                gltf::image::Source::Uri { uri, mime_type } => {
+                    if uri.starts_with("data:") {
+                        return Some(uri.to_string());
+                    }
+                    let path = base_dir.unwrap_or(Path::new(".")).join(uri);
+                    let bytes = std::fs::read(&path)
+                        .map_err(|e| log::warn!("glTF import: texture {path:?}: {e}"))
+                        .ok()?;
+                    let mime = mime_type.map(str::to_string).unwrap_or_else(|| image_mime(uri).to_string());
+                    (bytes, mime)
+                }
+            };
+            Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+        })
+        .collect()
+}
+
+/// MIME type for an image file name (glTF allows PNG and JPEG).
+fn image_mime(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else {
+        "image/png"
+    }
+}
+
 /// Read one primitive as triangles, applying `linear` to the vertices.
+/// UVs are stored bottom-left-origin (`v` flipped), the convention
+/// [`MeshData`] shares with Collada; the base-colour texture, if any,
+/// becomes the mesh's single material.
 fn primitive_mesh(
     prim: &gltf::Primitive<'_>,
     buffers: &[Vec<u8>],
+    images: &[Option<String>],
     linear: &na::Matrix3<f64>,
 ) -> Option<MeshData> {
     use gltf::mesh::Mode;
@@ -565,35 +939,83 @@ fn primitive_mesh(
         })
         .collect();
 
+    let texcoords: Vec<na::Point2<f64>> = reader
+        .read_tex_coords(0)
+        .map(|uv| uv.into_f32().map(|[u, v]| na::Point2::new(u as f64, 1.0 - v as f64)).collect())
+        .filter(|uv: &Vec<_>| uv.len() == vertices.len())
+        .unwrap_or_default();
+    let pbr = prim.material().pbr_metallic_roughness();
+    let texture = pbr
+        .base_color_texture()
+        .filter(|t| t.tex_coord() == 0 && !texcoords.is_empty())
+        .and_then(|t| images.get(t.texture().source().index()).cloned().flatten());
+    let (materials, submeshes) = match texture {
+        Some(uri) => {
+            let [r, g, b, a] = pbr.base_color_factor().map(f64::from);
+            let material = misarta::mesh::Material {
+                name: prim.material().name().unwrap_or_default().to_string(),
+                texture_diffuse: Some(uri),
+                ..misarta::mesh::Material::from_color(r, g, b, a)
+            };
+            let sub = misarta::mesh::SubMesh {
+                name: String::new(),
+                tri_start: 0,
+                tri_count: tris.len(),
+                material_index: Some(0),
+            };
+            (vec![material], vec![sub])
+        }
+        None => (Vec::new(), Vec::new()),
+    };
+
     Some(MeshData {
         vertices,
         indices: tris,
         face_normals,
         vertex_normals,
-        texcoords: Vec::new(),
-        materials: Vec::new(),
-        submeshes: Vec::new(),
+        texcoords,
+        materials,
+        submeshes,
     })
 }
 
-/// Concatenate meshes into one (indices re-based).
+/// Average `COLOR_0` of a primitive (vertex colours), if it has any.
+/// [`MeshData`] has no per-vertex colour, so it tints the visual instead.
+fn primitive_vertex_color(prim: &gltf::Primitive<'_>, buffers: &[Vec<u8>]) -> Option<[f32; 4]> {
+    let reader = prim.reader(|b| buffers.get(b.index()).map(Vec::as_slice));
+    let colors: Vec<[f32; 4]> = reader.read_colors(0)?.into_rgba_f32().collect();
+    if colors.is_empty() {
+        return None;
+    }
+    let n = colors.len() as f32;
+    Some(std::array::from_fn(|i| colors.iter().map(|c| c[i]).sum::<f32>() / n))
+}
+
+/// Concatenate meshes into one (indices re-based). UVs are kept only if
+/// every part has them; materials and sub-meshes are carried over.
 fn merge_meshes(parts: Vec<MeshData>) -> MeshData {
-    let mut parts = parts.into_iter();
-    let mut out = parts.next().unwrap_or_else(|| MeshData::from_flat_vertices_f32(&[]));
+    let all_uv = !parts.is_empty() && parts.iter().all(|m| m.texcoords.len() == m.vertices.len());
+    let all_vn = !parts.is_empty() && parts.iter().all(|m| m.vertex_normals.len() == m.vertices.len());
+    let mut out = MeshData::from_flat_vertices_f32(&[]);
     for m in parts {
         let base = out.vertices.len() as u32;
-        // Keep per-vertex normals only if every part has them.
-        if out.vertex_normals.len() == out.vertices.len() && m.vertex_normals.len() == m.vertices.len() {
-            out.vertex_normals.extend(m.vertex_normals);
-        } else {
-            out.vertex_normals.clear();
-        }
+        let tri_base = out.indices.len();
+        let mat_base = out.materials.len();
         out.vertices.extend(m.vertices);
         out.indices.extend(m.indices.iter().map(|t| t.map(|i| i + base)));
         out.face_normals.extend(m.face_normals);
-    }
-    if out.vertex_normals.len() != out.vertices.len() {
-        out.vertex_normals.clear();
+        if all_vn {
+            out.vertex_normals.extend(m.vertex_normals);
+        }
+        if all_uv {
+            out.texcoords.extend(m.texcoords);
+        }
+        out.materials.extend(m.materials);
+        out.submeshes.extend(m.submeshes.into_iter().map(|sm| misarta::mesh::SubMesh {
+            tri_start: sm.tri_start + tri_base,
+            material_index: sm.material_index.map(|i| i + mat_base),
+            ..sm
+        }));
     }
     out
 }
@@ -632,6 +1054,7 @@ fn set_slot_geometry(model: &mut RobotModel, link: &str, slot: Slot, geometry: G
 fn import_articara(
     doc: &gltf::Document,
     buffers: &[Vec<u8>],
+    images: &[Option<String>],
     meta: Value,
     source_path: Option<&Path>,
 ) -> Result<RobotModel, String> {
@@ -668,7 +1091,7 @@ fn import_articara(
         };
         let parts = mesh
             .primitives()
-            .filter_map(|p| primitive_mesh(&p, buffers, &na::Matrix3::identity()))
+            .filter_map(|p| primitive_mesh(&p, buffers, images, &na::Matrix3::identity()))
             .collect();
         meshes.insert((link.to_string(), slot), merge_meshes(parts));
     }
@@ -744,12 +1167,149 @@ fn unique_name(base: &str, used: &mut HashSet<String>) -> String {
     name
 }
 
+/// Joint / link description read from a plain glTF node's custom
+/// properties (`extras`). Blender writes an object's custom properties
+/// there when exported with *Include → Custom Properties*.
+///
+/// | property         | meaning                                              |
+/// |------------------|------------------------------------------------------|
+/// | `joint_type`     | `revolute` / `continuous` / `prismatic` / `fixed`     |
+/// | `joint_axis`     | `[x, y, z]` in the node's local Z-up frame (default `[0, 0, 1]`) |
+/// | `joint_lower` / `joint_upper` | limits in rad or m (revolute default ±π) |
+/// | `joint_effort` / `joint_velocity` | actuator limits (0 = undeclared)  |
+/// | `joint_name`     | joint name (default `<link>_joint`)                   |
+/// | `mass`           | link mass in kg; inertia is computed from its meshes |
+/// | `collision`      | `true` to reuse the node's meshes as collision geometry |
+///
+/// The joint connects the parent node's link to this node's link, with
+/// the node's transform in the file as the zero position. Link frames are
+/// the nodes' frames brought back to Z-up, i.e. exactly the Blender
+/// object's local axes, so `joint_axis` is written as seen in Blender:
+/// `[0, 0, 1]` is the object's local Z.
+#[derive(Default)]
+struct NodeProps {
+    joint_type: Option<String>,
+    joint_axis: Option<[f64; 3]>,
+    joint_lower: Option<f64>,
+    joint_upper: Option<f64>,
+    joint_effort: Option<f64>,
+    joint_velocity: Option<f64>,
+    joint_name: Option<String>,
+    mass: Option<f64>,
+    collision: bool,
+}
+
+impl NodeProps {
+    fn from_node(node: &gltf::Node<'_>) -> Self {
+        let Some(extras) = parse_extras(node.extras()) else {
+            return Self::default();
+        };
+        let num = |k: &str| extras.get(k).and_then(Value::as_f64);
+        let text = |k: &str| extras.get(k).and_then(Value::as_str).map(str::to_string);
+        let axis = extras.get("joint_axis").and_then(Value::as_array).and_then(|a| {
+            let v: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
+            (v.len() == 3).then(|| [v[0], v[1], v[2]])
+        });
+        Self {
+            joint_type: text("joint_type"),
+            joint_axis: axis,
+            joint_lower: num("joint_lower"),
+            joint_upper: num("joint_upper"),
+            joint_effort: num("joint_effort"),
+            joint_velocity: num("joint_velocity"),
+            joint_name: text("joint_name"),
+            mass: num("mass"),
+            // Blender stores booleans as 0 / 1 integers.
+            collision: extras
+                .get("collision")
+                .is_some_and(|v| v.as_bool().unwrap_or(false) || v.as_f64().is_some_and(|x| x != 0.0)),
+        }
+    }
+
+    fn joint_kind(&self, node_name: &str) -> mn::JointKind {
+        match self.joint_type.as_deref().map(str::to_ascii_lowercase).as_deref() {
+            None | Some("fixed") => mn::JointKind::Fixed,
+            Some("revolute") => mn::JointKind::Revolute,
+            Some("continuous") => mn::JointKind::Continuous,
+            Some("prismatic") => mn::JointKind::Prismatic,
+            Some(other) => {
+                log::warn!("glTF import: node '{node_name}': unsupported joint_type '{other}', using fixed");
+                mn::JointKind::Fixed
+            }
+        }
+    }
+}
+
+/// Link frame of a node from its world matrix: the rigid part brought
+/// back to Z-up, plus the residual linear map (scale / shear) that takes
+/// node-local glTF coordinates into that frame.
+fn link_frame(world: &na::Matrix4<f64>) -> (na::Isometry3<f64>, na::Matrix3<f64>) {
+    let (rigid, residual) = split_rigid(world);
+    // A Y-up exporter (Blender) conjugates every node's frame by the axis
+    // conversion; undo it per node so link frames are Z-up again and match
+    // the object axes the author saw.
+    (
+        rigid * na::Isometry3::from_parts(na::Translation3::identity(), z_up_to_y_up()),
+        z_up_to_y_up().inverse().to_rotation_matrix().matrix() * residual,
+    )
+}
+
+/// Link frames of every node under `scene`, given each node's local matrix.
+fn scene_link_frames(
+    scene: &gltf::Scene<'_>,
+    local: &dyn Fn(&gltf::Node<'_>) -> na::Matrix4<f64>,
+) -> HashMap<usize, na::Isometry3<f64>> {
+    fn walk(
+        node: gltf::Node<'_>,
+        parent_world: &na::Matrix4<f64>,
+        local: &dyn Fn(&gltf::Node<'_>) -> na::Matrix4<f64>,
+        out: &mut HashMap<usize, na::Isometry3<f64>>,
+    ) {
+        let world = parent_world * local(&node);
+        out.insert(node.index(), link_frame(&world).0);
+        for child in node.children() {
+            walk(child, &world, local, out);
+        }
+    }
+    let mut out = HashMap::new();
+    // glTF is Y-up; articara is Z-up.
+    let y_up_to_z_up = z_up_to_y_up().inverse().to_homogeneous();
+    for node in scene.nodes() {
+        walk(node, &y_up_to_z_up, local, &mut out);
+    }
+    out
+}
+
+/// glTF's column-major matrix → nalgebra.
+fn gltf_matrix(m: [[f32; 4]; 4]) -> na::Matrix4<f64> {
+    na::Matrix4::from_fn(|r, c| m[c][r] as f64)
+}
+
+fn node_matrix(node: &gltf::Node<'_>) -> na::Matrix4<f64> {
+    gltf_matrix(node.transform().matrix())
+}
+
+/// A movable joint created from a node, kept to convert animations.
+struct NodeJoint {
+    node: usize,
+    /// Node of the parent link; `None` for the synthetic root.
+    parent_node: Option<usize>,
+    joint: String,
+    kind: mn::JointKind,
+    axis: na::Vector3<f64>,
+    origin: na::Isometry3<f64>,
+}
+
 struct GenericImport<'a> {
     buffers: &'a [Vec<u8>],
+    images: &'a [Option<String>],
     file: mn::MisaFile,
     link_names: HashSet<String>,
     joint_names: HashSet<String>,
     meshes: Vec<(String, Slot, MeshData)>,
+    /// Link name → mass from a `mass` custom property.
+    masses: Vec<(String, f64)>,
+    joints: Vec<NodeJoint>,
 }
 
 impl GenericImport<'_> {
@@ -758,15 +1318,15 @@ impl GenericImport<'_> {
         node: gltf::Node<'_>,
         parent_world: &na::Matrix4<f64>,
         parent_rigid: &na::Isometry3<f64>,
-        parent_link: &str,
+        parent: (&str, Option<usize>),
     ) {
-        let m = node.transform().matrix();
-        let local = na::Matrix4::from_fn(|r, c| m[c][r] as f64);
-        let world = parent_world * local;
-        let (rigid, residual) = split_rigid(&world);
+        let (parent_link, parent_node) = parent;
+        let world = parent_world * node_matrix(&node);
+        let (rigid, residual) = link_frame(&world);
 
         let base = node.name().map(str::to_string).unwrap_or_else(|| format!("node_{}", node.index()));
         let link_name = unique_name(&base, &mut self.link_names);
+        let props = NodeProps::from_node(&node);
         let mut link = mn::Link {
             name: link_name.clone(),
             description: String::new(),
@@ -777,10 +1337,21 @@ impl GenericImport<'_> {
         };
         if let Some(mesh) = node.mesh() {
             for prim in mesh.primitives() {
-                let Some(data) = primitive_mesh(&prim, self.buffers, &residual) else {
+                let Some(data) = primitive_mesh(&prim, self.buffers, self.images, &residual) else {
                     continue;
                 };
-                let rgba = prim.material().pbr_metallic_roughness().base_color_factor();
+                let mut rgba = prim.material().pbr_metallic_roughness().base_color_factor();
+                if let Some(vc) = primitive_vertex_color(&prim, self.buffers) {
+                    rgba = std::array::from_fn(|i| rgba[i] * vc[i]);
+                }
+                if props.collision {
+                    self.meshes.push((link_name.clone(), Slot::Collision(link.collision.len()), data.clone()));
+                    link.collision.push(mn::Collision {
+                        origin: mn::Origin::default(),
+                        geom: placeholder_geom(),
+                        physics: None,
+                    });
+                }
                 self.meshes.push((link_name.clone(), Slot::Visual(link.visual.len()), data));
                 link.visual.push(mn::Visual {
                     origin: mn::Origin::default(),
@@ -792,20 +1363,52 @@ impl GenericImport<'_> {
         }
         self.file.link.push(link);
 
-        let joint_name = unique_name(&format!("{link_name}_joint"), &mut self.joint_names);
+        if let Some(mass) = props.mass {
+            self.masses.push((link_name.clone(), mass));
+        }
+
+        let kind = props.joint_kind(&link_name);
+        // The axis is given in the node's local (Z-up) frame; map it into
+        // the link frame through the residual so scale doesn't skew it.
+        let axis_local = props.joint_axis.map(na::Vector3::from).unwrap_or_else(na::Vector3::z);
+        let axis = (residual * (z_up_to_y_up() * axis_local))
+            .try_normalize(1e-12)
+            .unwrap_or_else(na::Vector3::z);
+        let default_range = match kind {
+            mn::JointKind::Revolute => (-std::f64::consts::PI, std::f64::consts::PI),
+            _ => (0.0, 0.0),
+        };
+        let joint_base = props.joint_name.clone().unwrap_or_else(|| format!("{link_name}_joint"));
+        let joint_name = unique_name(&joint_base, &mut self.joint_names);
+        let origin = parent_rigid.inverse() * rigid;
+        if kind != mn::JointKind::Fixed {
+            self.joints.push(NodeJoint {
+                node: node.index(),
+                parent_node,
+                joint: joint_name.clone(),
+                kind,
+                axis,
+                origin,
+            });
+        }
         self.file.joint.push(mn::Joint {
             name: joint_name,
-            kind: mn::JointKind::Fixed,
+            kind,
             parent: parent_link.to_string(),
             child: link_name.clone(),
-            axis: [0.0, 0.0, 1.0],
-            origin: misa_origin(&(parent_rigid.inverse() * rigid)),
-            limit: mn::JointLimit::default(),
+            axis: [axis.x, axis.y, axis.z],
+            origin: misa_origin(&origin),
+            limit: mn::JointLimit {
+                lower: props.joint_lower.unwrap_or(default_range.0),
+                upper: props.joint_upper.unwrap_or(default_range.1),
+                effort: props.joint_effort.unwrap_or(0.0),
+                velocity: props.joint_velocity.unwrap_or(0.0),
+            },
             dynamics: mn::JointDynamics::default(),
         });
 
         for child in node.children() {
-            self.visit(child, &world, &rigid, &link_name);
+            self.visit(child, &world, &rigid, (&link_name, Some(node.index())));
         }
     }
 }
@@ -814,6 +1417,7 @@ impl GenericImport<'_> {
 fn import_generic(
     doc: &gltf::Document,
     buffers: &[Vec<u8>],
+    images: &[Option<String>],
     source_path: Option<&Path>,
 ) -> Result<RobotModel, String> {
     let scene = doc
@@ -850,15 +1454,18 @@ fn import_generic(
 
     let mut imp = GenericImport {
         buffers,
+        images,
         file,
         link_names,
         joint_names: HashSet::new(),
         meshes: Vec::new(),
+        masses: Vec::new(),
+        joints: Vec::new(),
     };
     // glTF is Y-up; articara is Z-up.
     let y_up_to_z_up = z_up_to_y_up().inverse().to_homogeneous();
     for node in scene.nodes() {
-        imp.visit(node, &y_up_to_z_up, &na::Isometry3::identity(), &root);
+        imp.visit(node, &y_up_to_z_up, &na::Isometry3::identity(), (&root, None));
     }
 
     let base = source_path.unwrap_or(Path::new(""));
@@ -866,8 +1473,231 @@ fn import_generic(
     for (link, slot, mesh) in imp.meshes {
         set_slot_geometry(&mut model, &link, slot, mesh_geom(mesh));
     }
+    for (link, mass) in imp.masses {
+        if let Some(&li) = model.link_map.get(&link) {
+            let l = &mut model.links[li];
+            l.inertial = compute_link_inertia(&l.visuals, mass);
+        }
+    }
     model.rebuild_misarta_model();
+    import_animations(doc, &scene, buffers, &imp.joints, &mut model);
     Ok(model)
+}
+
+// ─── Animations → poses / sequences ─────────────────────────────────────
+
+/// Most keyframes kept per imported animation; denser ones (baked
+/// exports) are resampled uniformly to this many.
+const MAX_ANIMATION_KEYS: usize = 120;
+
+/// One animation channel, read into memory.
+struct Track {
+    node: usize,
+    property: gltf::animation::Property,
+    interpolation: gltf::animation::Interpolation,
+    times: Vec<f32>,
+    /// Translation `[x, y, z, _]`, rotation `[x, y, z, w]` or scale
+    /// `[x, y, z, _]`. For CUBICSPLINE: `[in-tangent, value, out-tangent]`
+    /// triples, as stored.
+    values: Vec<[f32; 4]>,
+}
+
+impl Track {
+    fn read(channel: &gltf::animation::Channel<'_>, buffers: &[Vec<u8>]) -> Option<Self> {
+        use gltf::animation::util::ReadOutputs;
+        let reader = channel.reader(|b| buffers.get(b.index()).map(Vec::as_slice));
+        let times: Vec<f32> = reader.read_inputs()?.collect();
+        let values: Vec<[f32; 4]> = match reader.read_outputs()? {
+            ReadOutputs::Translations(it) | ReadOutputs::Scales(it) => it.map(|v| [v[0], v[1], v[2], 0.0]).collect(),
+            ReadOutputs::Rotations(it) => it.into_f32().collect(),
+            ReadOutputs::MorphTargetWeights(_) => return None,
+        };
+        let interpolation = channel.sampler().interpolation();
+        let per_key = if interpolation == gltf::animation::Interpolation::CubicSpline { 3 } else { 1 };
+        if times.is_empty() || values.len() != times.len() * per_key {
+            return None;
+        }
+        Some(Self {
+            node: channel.target().node().index(),
+            property: channel.target().property(),
+            interpolation,
+            times,
+            values,
+        })
+    }
+
+    /// Value at time `t` (clamped to the keyframe range).
+    fn sample(&self, t: f32) -> [f32; 4] {
+        use gltf::animation::Interpolation;
+        let cubic = self.interpolation == Interpolation::CubicSpline;
+        let value = |k: usize| if cubic { self.values[3 * k + 1] } else { self.values[k] };
+        let n = self.times.len();
+        if t <= self.times[0] {
+            return value(0);
+        }
+        if t >= self.times[n - 1] {
+            return value(n - 1);
+        }
+        let k = self.times.partition_point(|&x| x <= t) - 1;
+        let dt = self.times[k + 1] - self.times[k];
+        let u = if dt > 0.0 { (t - self.times[k]) / dt } else { 0.0 };
+        let rotation = self.property == gltf::animation::Property::Rotation;
+        let out = match self.interpolation {
+            Interpolation::Step => value(k),
+            Interpolation::Linear if rotation => {
+                let q = |v: [f32; 4]| na::UnitQuaternion::from_quaternion(na::Quaternion::new(v[3], v[0], v[1], v[2]));
+                let r = q(value(k)).slerp(&q(value(k + 1)), u);
+                let c = r.quaternion();
+                [c.i, c.j, c.k, c.w]
+            }
+            Interpolation::Linear => {
+                let (a, b) = (value(k), value(k + 1));
+                std::array::from_fn(|i| a[i] + (b[i] - a[i]) * u)
+            }
+            Interpolation::CubicSpline => {
+                let (v0, b0) = (self.values[3 * k + 1], self.values[3 * k + 2]);
+                let (a1, v1) = (self.values[3 * (k + 1)], self.values[3 * (k + 1) + 1]);
+                let (u2, u3) = (u * u, u * u * u);
+                std::array::from_fn(|i| {
+                    (2.0 * u3 - 3.0 * u2 + 1.0) * v0[i]
+                        + (u3 - 2.0 * u2 + u) * dt * b0[i]
+                        + (-2.0 * u3 + 3.0 * u2) * v1[i]
+                        + (u3 - u2) * dt * a1[i]
+                })
+            }
+        };
+        if rotation {
+            let n = out.iter().map(|c| c * c).sum::<f32>().sqrt();
+            if n > 0.0 {
+                return out.map(|c| c / n);
+            }
+        }
+        out
+    }
+}
+
+/// Turn the file's animations into articara poses and sequences: each
+/// animation's keyframe times become poses `<animation>/<k>` (joint values
+/// recovered from the animated node transforms) chained by a sequence
+/// `<animation>` with linear steps. Only nodes that became movable joints
+/// can be represented; motion of other nodes is reported and dropped.
+fn import_animations(
+    doc: &gltf::Document,
+    scene: &gltf::Scene<'_>,
+    buffers: &[Vec<u8>],
+    joints: &[NodeJoint],
+    model: &mut RobotModel,
+) {
+    let joint_nodes: HashSet<usize> = joints.iter().map(|j| j.node).collect();
+    let mut pose_names: HashSet<String> = model.poses.iter().map(|p| p.name.clone()).collect();
+    let mut seq_names: HashSet<String> = model.sequences.iter().map(|s| s.name.clone()).collect();
+
+    for (ai, anim) in doc.animations().enumerate() {
+        let tracks: Vec<Track> = anim.channels().filter_map(|c| Track::read(&c, buffers)).collect();
+        let dropped: HashSet<usize> = tracks
+            .iter()
+            .filter(|t| !joint_nodes.contains(&t.node))
+            .map(|t| t.node)
+            .collect();
+        let anim_name = anim.name().map(str::to_string).unwrap_or_else(|| format!("animation_{ai}"));
+        if !dropped.is_empty() {
+            log::warn!(
+                "glTF import: animation '{anim_name}' moves {} node(s) that are not movable joints; that motion is dropped",
+                dropped.len()
+            );
+        }
+        if !tracks.iter().any(|t| joint_nodes.contains(&t.node)) {
+            continue;
+        }
+
+        let mut times: Vec<f32> = tracks.iter().flat_map(|t| t.times.iter().copied()).collect();
+        times.sort_by(f32::total_cmp);
+        times.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+        if times.len() > MAX_ANIMATION_KEYS {
+            let (t0, t1) = (times[0], times[times.len() - 1]);
+            let n = MAX_ANIMATION_KEYS - 1;
+            times = (0..=n).map(|k| t0 + (t1 - t0) * k as f32 / n as f32).collect();
+        }
+
+        // Joint values at each keyframe time.
+        let mut keys: Vec<std::collections::BTreeMap<String, f64>> = Vec::with_capacity(times.len());
+        let mut previous: HashMap<&str, f64> = HashMap::new();
+        for &t in &times {
+            let local = |node: &gltf::Node<'_>| -> na::Matrix4<f64> {
+                let (mut tr, mut rot, mut sc) = node.transform().decomposed();
+                for track in tracks.iter().filter(|tk| tk.node == node.index()) {
+                    let v = track.sample(t);
+                    match track.property {
+                        gltf::animation::Property::Translation => tr = [v[0], v[1], v[2]],
+                        gltf::animation::Property::Rotation => rot = v,
+                        gltf::animation::Property::Scale => sc = [v[0], v[1], v[2]],
+                        gltf::animation::Property::MorphTargetWeights => {}
+                    }
+                }
+                gltf_matrix(gltf::scene::Transform::Decomposed { translation: tr, rotation: rot, scale: sc }.matrix())
+            };
+            let frames = scene_link_frames(scene, &local);
+            let mut angles = std::collections::BTreeMap::new();
+            for j in joints {
+                let (Some(child), parent) = (frames.get(&j.node), j.parent_node.map(|p| frames.get(&p))) else {
+                    continue;
+                };
+                let parent = match parent {
+                    Some(Some(p)) => *p,
+                    Some(None) => continue,
+                    None => na::Isometry3::identity(),
+                };
+                let motion = j.origin.inverse() * parent.inverse() * child;
+                let mut q = match j.kind {
+                    mn::JointKind::Prismatic => motion.translation.vector.dot(&j.axis),
+                    _ => {
+                        let r = motion.rotation.quaternion();
+                        2.0 * r.imag().dot(&j.axis).atan2(r.w)
+                    }
+                };
+                if j.kind != mn::JointKind::Prismatic {
+                    // Keep consecutive angles continuous (no ±2π jumps).
+                    q = q.rem_euclid(std::f64::consts::TAU);
+                    if q > std::f64::consts::PI {
+                        q -= std::f64::consts::TAU;
+                    }
+                    if let Some(&prev) = previous.get(j.joint.as_str()) {
+                        q += ((prev - q) / std::f64::consts::TAU).round() * std::f64::consts::TAU;
+                    }
+                }
+                previous.insert(&j.joint, q);
+                angles.insert(j.joint.clone(), q);
+            }
+            keys.push(angles);
+        }
+
+        use misarta::trajectory::InterpolationKind;
+        if keys.len() == 1 {
+            let name = unique_name(&anim_name, &mut pose_names);
+            model.poses.push(NamedPose {
+                name,
+                angles: keys.pop().unwrap_or_default(),
+                duration: 1.0,
+                kind: InterpolationKind::QuinticSmooth,
+            });
+            continue;
+        }
+        let mut steps = Vec::with_capacity(keys.len());
+        let mut t_prev = 0.0;
+        for (k, (angles, &t)) in keys.into_iter().zip(&times).enumerate() {
+            let pose_name = unique_name(&format!("{anim_name}/{k}"), &mut pose_names);
+            let duration = (t - t_prev).max(0.0) as f64;
+            t_prev = t;
+            model.poses.push(NamedPose {
+                name: pose_name.clone(),
+                angles,
+                duration,
+                kind: InterpolationKind::Linear,
+            });
+            steps.push(SequenceStep { pose_name, duration, kind: InterpolationKind::Linear });
+        }
+        model.sequences.push(Sequence { name: unique_name(&anim_name, &mut seq_names), steps });
+    }
 }
 
 // =========================================================================
@@ -1002,6 +1832,286 @@ mod tests {
         let got = to_z_up * worlds["arm_link"];
         let want = model.compute_transforms()["arm_link"].cast::<f64>().to_homogeneous();
         assert!((got - want).norm() < 1e-5, "got {got}, want {want}");
+    }
+
+    fn arm_model_with_motions() -> RobotModel {
+        use misarta::trajectory::InterpolationKind;
+        let mut model = arm_model();
+        let mut raised = NamedPose::snapshot("raised", &model, 1.0, InterpolationKind::QuinticSmooth);
+        raised.angles.insert("arm_joint".into(), 1.2);
+        let mut lowered = raised.clone();
+        lowered.name = "lowered".into();
+        lowered.angles.insert("arm_joint".into(), -0.8);
+        lowered.duration = 0.5;
+        model.poses = vec![raised, lowered];
+        model.sequences = vec![Sequence {
+            name: "wave".into(),
+            steps: vec![
+                SequenceStep { pose_name: "raised".into(), duration: 1.0, kind: InterpolationKind::Linear },
+                SequenceStep { pose_name: "lowered".into(), duration: 0.5, kind: InterpolationKind::CubicSmooth },
+            ],
+        }];
+        model
+    }
+
+    #[test]
+    fn poses_and_sequences_become_animations() {
+        let model = arm_model_with_motions();
+        let glb = export_glb(&model).unwrap();
+        let gltf = gltf::Gltf::from_slice(&glb).unwrap();
+        let buffers = load_buffers(&gltf, None).unwrap();
+
+        let names: Vec<_> = gltf.animations().map(|a| a.name().unwrap().to_string()).collect();
+        assert_eq!(names, ["pose/raised", "pose/lowered", "sequence/wave"]);
+
+        let wave = gltf.animations().find(|a| a.name() == Some("sequence/wave")).unwrap();
+        let channel = wave.channels().next().unwrap();
+        assert_eq!(channel.target().node().name(), Some("arm_link"));
+        assert_eq!(channel.target().property(), gltf::animation::Property::Rotation);
+
+        let reader = channel.reader(|b| buffers.get(b.index()).map(Vec::as_slice));
+        let times: Vec<f32> = reader.read_inputs().unwrap().collect();
+        assert_eq!(times[0], 0.0);
+        assert!((times.last().unwrap() - 1.5).abs() < 1e-6);
+        let gltf::animation::util::ReadOutputs::Rotations(rot) = reader.read_outputs().unwrap() else {
+            panic!("expected rotations");
+        };
+        let rot: Vec<[f32; 4]> = rot.into_f32().collect();
+        // Rotation about the joint's Y axis: angle at the end of each step.
+        let angle_at = |t: f32| {
+            let k = times.iter().position(|&x| (x - t).abs() < 1e-6).unwrap();
+            let [x, y, z, w] = rot[k];
+            assert!(x.abs() < 1e-5 && z.abs() < 1e-5);
+            2.0 * y.atan2(w)
+        };
+        assert!(angle_at(0.0).abs() < 1e-5);
+        assert!((angle_at(1.0) - 1.2).abs() < 1e-4);
+        assert!((angle_at(1.5) + 0.8).abs() < 1e-4);
+    }
+
+    #[test]
+    fn animations_do_not_disturb_roundtrip() {
+        let model = arm_model_with_motions();
+        let imported = import_gltf_from_slice(&export_glb(&model).unwrap(), None).unwrap();
+        assert_eq!(imported.poses.len(), 2);
+        assert_eq!(imported.sequences.len(), 1);
+        assert_eq!(imported.sequences[0].steps.len(), 2);
+    }
+
+    /// glTF with one triangle mesh and the given nodes / scene roots.
+    fn triangle_gltf(nodes: Value, roots: Value) -> Vec<u8> {
+        let positions: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let bin: Vec<u8> = positions.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bin);
+        serde_json::to_vec(&json!({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": roots }],
+            "nodes": nodes,
+            "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }],
+            "accessors": [{
+                "bufferView": 0, "componentType": FLOAT, "count": 3, "type": "VEC3",
+                "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0],
+            }],
+            "bufferViews": [{ "buffer": 0, "byteLength": bin.len() }],
+            "buffers": [{ "byteLength": bin.len(), "uri": format!("data:application/octet-stream;base64,{b64}") }],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn import_joints_from_custom_properties() {
+        let bytes = triangle_gltf(
+            json!([
+                { "name": "base", "mesh": 0, "children": [1, 2], "extras": { "mass": 2.0, "collision": 1 } },
+                // Elbow 0.5 up (glTF Y = articara Z), hinge about the
+                // vertical: local Z in the Z-up convention.
+                { "name": "arm", "mesh": 0, "translation": [0.0, 0.5, 0.0], "extras": {
+                    "joint_type": "revolute", "joint_axis": [0.0, 0.0, 1.0],
+                    "joint_lower": -0.5, "joint_upper": 2.0, "joint_name": "elbow",
+                    "joint_effort": 10.0,
+                } },
+                { "name": "slider", "scale": [2.0, 2.0, 2.0], "extras": {
+                    "joint_type": "PRISMATIC", "joint_axis": [1.0, 0.0, 0.0], "joint_upper": 0.3,
+                } },
+            ]),
+            json!([0]),
+        );
+        let model = import_gltf_from_slice(&bytes, None).unwrap();
+
+        // Unrotated nodes give world-aligned (Z-up) link frames.
+        let tf = model.compute_transforms();
+        assert!(tf["arm"].rotation.angle() < 1e-6);
+
+        let elbow = &model.joints[model.joint_map["elbow"]];
+        assert_eq!(elbow.joint_type, "revolute");
+        assert_eq!((elbow.parent_link.as_str(), elbow.child_link.as_str()), ("base", "arm"));
+        assert!((elbow.axis - na::Vector3::z()).norm() < 1e-6, "{:?}", elbow.axis);
+        assert_eq!((elbow.lower, elbow.upper, elbow.effort), (-0.5, 2.0, 10.0));
+        assert!((elbow.origin.translation.vector - na::Vector3::new(0.0, 0.0, 0.5)).norm() < 1e-6);
+
+        let slider = &model.joints[model.joint_map["slider_joint"]];
+        assert_eq!(slider.joint_type, "prismatic");
+        // Scale must not leak into the axis length.
+        assert!((slider.axis - na::Vector3::x()).norm() < 1e-6, "{:?}", slider.axis);
+        assert_eq!((slider.lower, slider.upper), (0.0, 0.3));
+
+        // The joint actually moves the child.
+        let mut posed = model.clone();
+        posed.joint_positions[model.joint_map["elbow"]] = std::f64::consts::FRAC_PI_2;
+        let before = model.compute_transforms()["arm"].rotation;
+        let after = posed.compute_transforms()["arm"].rotation;
+        assert!((before.angle_to(&after) - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+
+        let base = &model.links[model.link_map["base"]];
+        assert_eq!(base.inertial.mass, 2.0);
+        assert_eq!(base.collisions.len(), 1);
+        assert!(matches!(base.collisions[0].geometry, GeomData::Mesh { .. }));
+        // No properties → fixed joint, no collision.
+        assert!(model.links[model.link_map["arm"]].collisions.is_empty());
+        assert_eq!(model.joints[model.joint_map["base_joint"]].joint_type, "fixed");
+    }
+
+    #[test]
+    fn import_animation_as_poses_and_sequence() {
+        use std::f32::consts::PI;
+        // Rotation keys about glTF Y (= the nodes' local Z-up axis Z).
+        let about_y = |deg: f32| {
+            let h = deg.to_radians() / 2.0;
+            [0.0, h.sin(), 0.0, h.cos()]
+        };
+        let times: [f32; 3] = [0.0, 0.5, 1.0];
+        let elbow: Vec<[f32; 4]> = [0.0, 45.0, 90.0].map(about_y).to_vec();
+        // Continuous spin 0 → 170 → 340°: the raw angle wraps past 180°.
+        let spin: Vec<[f32; 4]> = [0.0, 170.0, 340.0].map(about_y).to_vec();
+        let mut bin: Vec<u8> = times.iter().flat_map(|f| f.to_le_bytes()).collect();
+        for q in elbow.iter().chain(&spin) {
+            bin.extend(q.iter().flat_map(|f| f.to_le_bytes()));
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bin);
+        let doc = json!({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [
+                { "name": "base", "children": [1, 2] },
+                { "name": "arm", "translation": [0.0, 0.5, 0.0],
+                  "extras": { "joint_type": "revolute", "joint_axis": [0.0, 0.0, 1.0], "joint_name": "elbow" } },
+                { "name": "wheel", "extras": { "joint_type": "continuous", "joint_axis": [0.0, 0.0, 1.0] } },
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": FLOAT, "count": 3, "type": "SCALAR", "min": [0.0], "max": [1.0] },
+                { "bufferView": 1, "componentType": FLOAT, "count": 3, "type": "VEC4" },
+                { "bufferView": 2, "componentType": FLOAT, "count": 3, "type": "VEC4" },
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 12 },
+                { "buffer": 0, "byteOffset": 12, "byteLength": 48 },
+                { "buffer": 0, "byteOffset": 60, "byteLength": 48 },
+            ],
+            "buffers": [{ "byteLength": bin.len(), "uri": format!("data:application/octet-stream;base64,{b64}") }],
+            "animations": [{
+                "name": "wave",
+                "samplers": [
+                    { "input": 0, "output": 1, "interpolation": "LINEAR" },
+                    { "input": 0, "output": 2, "interpolation": "LINEAR" },
+                ],
+                "channels": [
+                    { "sampler": 0, "target": { "node": 1, "path": "rotation" } },
+                    { "sampler": 1, "target": { "node": 2, "path": "rotation" } },
+                ],
+            }],
+        });
+        let model = import_gltf_from_slice(&serde_json::to_vec(&doc).unwrap(), None).unwrap();
+
+        assert_eq!(model.sequences.len(), 1);
+        let seq = &model.sequences[0];
+        assert_eq!(seq.name, "wave");
+        let names: Vec<_> = seq.steps.iter().map(|s| s.pose_name.as_str()).collect();
+        assert_eq!(names, ["wave/0", "wave/1", "wave/2"]);
+        let durations: Vec<f64> = seq.steps.iter().map(|s| s.duration).collect();
+        assert_eq!(durations, [0.0, 0.5, 0.5]);
+
+        let angle = |pose: &str, joint: &str| {
+            model.poses.iter().find(|p| p.name == pose).unwrap().angles[joint] as f32
+        };
+        let deg = |d: f32| d * PI / 180.0;
+        for (k, (e, w)) in [(0.0, 0.0), (45.0, 170.0), (90.0, 340.0)].into_iter().enumerate() {
+            let pose = format!("wave/{k}");
+            assert!((angle(&pose, "elbow") - deg(e)).abs() < 1e-4, "{pose} elbow");
+            assert!((angle(&pose, "wheel_joint") - deg(w)).abs() < 1e-4, "{pose} wheel {}", angle(&pose, "wheel_joint"));
+        }
+
+        // Replaying the last pose reproduces the animated end state.
+        let last = model.poses.iter().find(|p| p.name == "wave/2").unwrap();
+        let mut posed = model.clone();
+        posed.joint_positions = last.to_vector(&model, &model.joint_positions);
+        let r = posed.compute_transforms()["arm"].rotation;
+        assert!((r.angle() - PI / 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn textures_and_uvs_roundtrip() {
+        // 1×1 PNG.
+        const PNG_B64: &str =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let positions: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let uvs: [f32; 6] = [0.0, 0.0, 1.0, 0.0, 0.0, 0.25];
+        // Vertex reds 0.5 / 1.0 / 0.5.
+        let colors: [f32; 12] = [0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 1.0, 1.0, 1.0];
+        let bin: Vec<u8> = positions.iter().chain(&uvs).chain(&colors).flat_map(|f| f.to_le_bytes()).collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bin);
+        let doc = json!({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "tri", "mesh": 0 }],
+            "meshes": [{ "primitives": [{
+                "attributes": { "POSITION": 0, "TEXCOORD_0": 1, "COLOR_0": 2 }, "material": 0,
+            }] }],
+            "materials": [{ "pbrMetallicRoughness": {
+                "baseColorFactor": [1.0, 0.5, 1.0, 1.0], "baseColorTexture": { "index": 0 },
+            } }],
+            "textures": [{ "source": 0 }],
+            "images": [{ "uri": format!("data:image/png;base64,{PNG_B64}") }],
+            "accessors": [
+                { "bufferView": 0, "componentType": FLOAT, "count": 3, "type": "VEC3",
+                  "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] },
+                { "bufferView": 1, "componentType": FLOAT, "count": 3, "type": "VEC2" },
+                { "bufferView": 2, "componentType": FLOAT, "count": 3, "type": "VEC4" },
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 24 },
+                { "buffer": 0, "byteOffset": 60, "byteLength": 48 },
+            ],
+            "buffers": [{ "byteLength": bin.len(), "uri": format!("data:application/octet-stream;base64,{b64}") }],
+        });
+        let check = |model: &RobotModel| {
+            let vis = &model.links[model.link_map["tri"]].visuals[0];
+            let GeomData::Mesh { mesh, .. } = &vis.geometry else { panic!("expected mesh") };
+            // UVs stored bottom-left-origin: v' = 1 − v.
+            let v: Vec<f64> = mesh.texcoords.iter().map(|t| t.y).collect();
+            assert_eq!(v, [1.0, 1.0, 0.75]);
+            let tex = mesh.materials[0].texture_diffuse.as_deref().unwrap();
+            assert_eq!(tex, format!("data:image/png;base64,{PNG_B64}"));
+            assert_eq!(mesh.submeshes[0].material_index, Some(0));
+            vis.color
+        };
+
+        let model = import_gltf_from_slice(&serde_json::to_vec(&doc).unwrap(), None).unwrap();
+        // Base colour × mean vertex colour (R averages to 2/3).
+        let c = check(&model);
+        assert!((c[0] - 2.0 / 3.0).abs() < 1e-6 && (c[1] - 0.5).abs() < 1e-6 && c[2] == 1.0, "{c:?}");
+
+        let glb = export_glb(&model).unwrap();
+        let gltf = gltf::Gltf::from_slice(&glb).unwrap();
+        assert_eq!(gltf.images().count(), 1);
+        let tex = gltf.materials().find_map(|m| m.pbr_metallic_roughness().base_color_texture()).unwrap();
+        assert_eq!(tex.texture().source().index(), 0);
+
+        let again = import_gltf_from_slice(&glb, None).unwrap();
+        assert_eq!(check(&again), c);
     }
 
     /// Minimal hand-written glTF: a scaled parent node with a child mesh

@@ -13,7 +13,8 @@ import / export targets.
 
 ### Prerequisites
 
-- **Rust 1.85 or newer** (the workspace uses edition 2024). Install via
+- **Rust 1.100.0**, pinned in [`rust-toolchain.toml`](rust-toolchain.toml)
+  (rustup picks it up automatically; CI uses the same version). Install via
   [rustup](https://rustup.rs/):
   `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - **MuJoCo 3.8.0** — only needed for the `--features mujoco` physics
@@ -61,14 +62,38 @@ tooling but are treated as **lossy derivatives** of the `.misa` master.
 - **`.misa` master format** — single-file robot description in TOML
   (kinematics + geometry + sensors + actuators + editor metadata),
   via the [`misarta::native`](misarta/src/native/) module.
+- **Motion editor** (*View → Motion Editor*, or **🎞 Edit** on a sequence) —
+  puts a sequence on a timeline: kinematic preview by scrubbing / playing
+  (no simulation needed), keyframes added from the current posture,
+  dragged in time, re-captured or deleted, per-segment curves, plots of
+  position / velocity / required torque per joint, and a check that lists
+  every interval breaking a joint's range, declared `velocity` or declared
+  `effort` (torque from fixed-base inverse dynamics). With `--features
+  mujoco`, **Run in MuJoCo** restarts the sim at the start pose (on the
+  ground or with the base fixed), holds it for a settle time, plays the
+  sequence and records it: the recorded q / q̇ / applied τ overlay the plan,
+  the same checks run on them (physical torques, contact included), and
+  per-joint tracking error and base tilt are reported — edit, run again,
+  compare, before going to hardware. Exports the joint trajectory as CSV.
+  Core in [`src/motion.rs`](src/motion.rs).
 - **Multi-format model loading** — `.misa` (native), URDF, MJCF (MuJoCo XML),
   USD, SDF. Legacy URDF + `.misarta.toml` sidecar workflows continue to work.
 - **glTF 2.0 (`.glb` / `.gltf`) import & export** — exports the posed robot
   as a node hierarchy (link → joint → child link) any glTF viewer can open,
   with meshes embedded and the full `.misa` description stored in node
-  `extras`, so articara → glTF → articara is lossless. Plain glTF scenes
-  (Blender, CAD exporters) import as links on fixed joints, converted from
-  Y-up to Z-up. See [`src/gltf_io.rs`](src/gltf_io.rs).
+  `extras`, so articara → glTF → articara is lossless. Base-colour textures
+  (PNG / JPEG) and UVs are imported, shown in the viewer and exported
+  (Collada textures too); saving a textured model as `.misa` keeps the
+  geometry but not the texture, since meshes are written as STL. Named poses and
+  sequences are exported as glTF animations (`pose/<name>`,
+  `sequence/<name>`) that Blender / three.js can play back. Plain glTF
+  scenes (Blender, CAD exporters) import as links on fixed joints,
+  converted from Y-up to Z-up; custom properties on a node (`joint_type`,
+  `joint_axis`, `joint_lower` / `joint_upper`, `mass`, `collision`, …) make
+  it a movable joint, so a robot can be assembled in Blender (export with
+  *Include → Custom Properties*, or use the add-on in
+  [`tools/blender/`](tools/blender/)); keyframed animations of those joints
+  import as poses + a sequence. See [`src/gltf_io.rs`](src/gltf_io.rs).
 - **Rigid body dynamics** — O(n) Featherstone algorithms via [`misarta`](https://github.com/takarakasai/misarta) (kinematics, dynamics, autodiff-ready).
 - **3D viewer & GUI** — `eframe` + `glow` renderer with `egui_plot` overlays (default `gui` feature).
 - **Physics backend** — optional MuJoCo integration (`--features mujoco`, requires `mujoco-rs`).

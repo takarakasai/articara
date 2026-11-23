@@ -335,8 +335,11 @@ dependencies = [
  "env_logger",
  "glow",
  "gltf",
+ "image",
  "legged-estimation",
  "log",
+ "misa-biped",
+ "misa-mpc",
  "misa-wbc",
  "misarta",
  "misarta-formats",
@@ -2637,6 +2640,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -3197,10 +3202,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "misa-biped"
+version = "0.1.0"
+source = "git+https://github.com/takarakasai/misa-locomotion.git?rev=0a6fb8563fb1b327e05509a2c042a37f4ad07267#0a6fb8563fb1b327e05509a2c042a37f4ad07267"
+dependencies = [
+ "misa-mpc",
+ "misa-wbc",
+ "misarta",
+ "nalgebra",
+]
+
+[[package]]
+name = "misa-mpc"
+version = "0.1.0"
+source = "git+https://github.com/takarakasai/misa-locomotion.git?rev=0a6fb8563fb1b327e05509a2c042a37f4ad07267#0a6fb8563fb1b327e05509a2c042a37f4ad07267"
+dependencies = [
+ "misa-wbc",
+ "nalgebra",
+]
+
+[[package]]
 name = "misa-wbc"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misa-wbc.git#92e42a59af30edca053ce9b61c7a74c40568753b"
+source = "git+https://github.com/takarakasai/misa-wbc.git#b76eba5ba2761506a27de35ad0cee1b2b0c44afe"
 dependencies = [
+ "cc",
  "clarabel",
  "nalgebra",
 ]

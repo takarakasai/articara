@@ -15,6 +15,7 @@ pub use legged_estimation::leg_odometry;
 pub mod mesh_ops;
 pub mod mesh_paths;
 pub mod mjcf;
+pub mod motion;
 #[cfg(feature = "mujoco")]
 pub mod mujoco_sim;
 #[cfg(feature = "mujoco")]

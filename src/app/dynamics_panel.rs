@@ -337,71 +337,7 @@ impl ArticaraApp {
                         .on_hover_text("Start real-time MuJoCo physics simulation")
                         .clicked()
                     {
-                        let (base_pos, ground) = self.collect_mujoco_setup();
-                        if let Some(ref model) = self.model {
-                            // The "⛔ Limits" checkbox now controls BOTH the
-                            // runtime controller clamp AND the MuJoCo-level
-                            // `forcelimited` / joint `range` attributes —
-                            // otherwise the UI would mislead: the host could
-                            // command 100 N·m but MuJoCo would silently clip
-                            // to ±τmax baked into the MJCF, and the user
-                            // would see "no change" when toggling limits.
-                            let bake = self.sim.enforce_actuator_limits;
-                            let opts = articara::mjcf::MjcfExportOptions {
-                                base_pos,
-                                ground_plane: ground,
-                                add_actuators: false,
-                                base_locked_axes: self.sim.mujoco_base_locked,
-                                bake_actuator_limits: bake,
-                                bake_joint_position_limits: bake,
-                                mesh_path_style: articara::mesh_paths::MeshPathStyle::default(),
-                                timestep: None, // keep MuJoCo's default
-                                extra_worldbody: None,
-                                default_friction: [self.sim.sim_default_friction, 0.005, 0.0001],
-                                // GUI sims stay on the hand-rolled PD path.
-                                native_velocity_servo: None,
-                                integrator: None,
-                                ..Default::default()
-                            };
-                            match articara::mujoco_sim::MujocoSim::new(model, opts) {
-                                Ok(mut sim) => {
-                                    // Carry the user's grav-comp toggle into
-                                    // the freshly-built sim so Stop → Play
-                                    // doesn't silently reset it to off.
-                                    sim.set_gravity_compensation(
-                                        self.sim.enforce_gravity_compensation,
-                                    );
-                                    self.sim.mujoco_sim = Some(sim);
-                                    // Build a fresh Madgwick estimator per IMU
-                                    // for this run so a previous Play→Stop
-                                    // cycle's quaternion doesn't bleed in.
-                                    self.rebuild_imu_estimators();
-                                    // Reset the leg-odometry estimator and
-                                    // seed its position with the body's
-                                    // current world position so the integrated
-                                    // estimate doesn't start from origin.
-                                    self.sim.leg_odometry.reset();
-                                    if let (Some(ref mj_sim), Some(ref m)) =
-                                        (self.sim.mujoco_sim.as_ref(), self.model.as_ref())
-                                    {
-                                        if let Some(p) = mj_sim.body_world_position(&m.root_link) {
-                                            self.sim.leg_odometry.set_position(
-                                                nalgebra::Vector3::new(p[0], p[1], p[2]),
-                                            );
-                                        }
-                                    }
-                                    self.sim.leg_odometry_last_stance = [true; 4];
-                                    // Start paused so the user can choose between
-                                    // frame stepping or ▶ Play before any time
-                                    // advances.
-                                    self.sim.dynamics_sim_paused = true;
-                                    self.status_message =
-                                        "MuJoCo paused at t=0 — press ▶ Play or ⏩ +N to advance"
-                                            .into();
-                                }
-                                Err(e) => self.status_message = format!("MuJoCo init error: {e}"),
-                            }
-                        }
+                        self.start_mujoco_sim();
                     }
                 });
 
@@ -837,6 +773,78 @@ impl ArticaraApp {
     }
 
     /// Stop any running dynamics simulation and restore the model.
+    /// Build a fresh MuJoCo sim from the model's current pose with the
+    /// panel's settings (base placement, ground, limits, friction, grav-comp)
+    /// and leave it paused at t = 0.
+    #[cfg(feature = "mujoco")]
+    pub(super) fn start_mujoco_sim(&mut self) {
+        let (base_pos, ground) = self.collect_mujoco_setup();
+        if let Some(ref model) = self.model {
+            // The "⛔ Limits" checkbox now controls BOTH the
+            // runtime controller clamp AND the MuJoCo-level
+            // `forcelimited` / joint `range` attributes —
+            // otherwise the UI would mislead: the host could
+            // command 100 N·m but MuJoCo would silently clip
+            // to ±τmax baked into the MJCF, and the user
+            // would see "no change" when toggling limits.
+            let bake = self.sim.enforce_actuator_limits;
+            let opts = articara::mjcf::MjcfExportOptions {
+                base_pos,
+                ground_plane: ground,
+                add_actuators: false,
+                base_locked_axes: self.sim.mujoco_base_locked,
+                bake_actuator_limits: bake,
+                bake_joint_position_limits: bake,
+                mesh_path_style: articara::mesh_paths::MeshPathStyle::default(),
+                timestep: None, // keep MuJoCo's default
+                extra_worldbody: None,
+                default_friction: [self.sim.sim_default_friction, 0.005, 0.0001],
+                // GUI sims stay on the hand-rolled PD path.
+                native_velocity_servo: None,
+                integrator: None,
+                ..Default::default()
+            };
+            match articara::mujoco_sim::MujocoSim::new(model, opts) {
+                Ok(mut sim) => {
+                    // Carry the user's grav-comp toggle into
+                    // the freshly-built sim so Stop → Play
+                    // doesn't silently reset it to off.
+                    sim.set_gravity_compensation(
+                        self.sim.enforce_gravity_compensation,
+                    );
+                    self.sim.mujoco_sim = Some(sim);
+                    // Build a fresh Madgwick estimator per IMU
+                    // for this run so a previous Play→Stop
+                    // cycle's quaternion doesn't bleed in.
+                    self.rebuild_imu_estimators();
+                    // Reset the leg-odometry estimator and
+                    // seed its position with the body's
+                    // current world position so the integrated
+                    // estimate doesn't start from origin.
+                    self.sim.leg_odometry.reset();
+                    if let (Some(ref mj_sim), Some(ref m)) =
+                        (self.sim.mujoco_sim.as_ref(), self.model.as_ref())
+                    {
+                        if let Some(p) = mj_sim.body_world_position(&m.root_link) {
+                            self.sim.leg_odometry.set_position(
+                                nalgebra::Vector3::new(p[0], p[1], p[2]),
+                            );
+                        }
+                    }
+                    self.sim.leg_odometry_last_stance = [true; 4];
+                    // Start paused so the user can choose between
+                    // frame stepping or ▶ Play before any time
+                    // advances.
+                    self.sim.dynamics_sim_paused = true;
+                    self.status_message =
+                        "MuJoCo paused at t=0 — press ▶ Play or ⏩ +N to advance"
+                            .into();
+                }
+                Err(e) => self.status_message = format!("MuJoCo init error: {e}"),
+            }
+        }
+    }
+
     pub(super) fn stop_dynamics_sim(&mut self) {
         if let Some(sim) = self.sim.dynamics_sim.take() {
             if let Some(ref mut model) = self.model {

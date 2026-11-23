@@ -46,6 +46,7 @@ use quadruped_gait::{
     VelocityCmd, solve_leg_ik,
 };
 
+#[allow(dead_code)]
 fn namiashi_misa() -> PathBuf {
     namiashi_misa_named("namiashi.misa")
 }
