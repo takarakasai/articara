@@ -162,7 +162,9 @@ smoke() {
         echo "note: Intel build under Rosetta — MuJoCo can't run here; checking the bundle statically" >&2
         local bin=$dir/$(exe "$target")
         local dep
-        dep=$(otool -L "$bin" | awk '/mujoco/ {print $1}')
+        # Line 1 of `otool -L` is the binary's own path (which may contain
+        # "mujoco" too); dependencies follow.
+        dep=$(otool -L "$bin" | tail -n +2 | awk '/libmujoco/ {print $1}')
         echo "  dependency: $dep" >&2
         otool -l "$bin" | grep -A2 LC_RPATH | grep -q '@executable_path' || { echo "no @executable_path rpath" >&2; exit 1; }
         local lib=$dir/${dep#@rpath/}
