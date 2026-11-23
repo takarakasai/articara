@@ -198,6 +198,10 @@ impl ArticaraApp {
 
             // ===== View menu =====
             ui.menu_button("View", |ui| {
+                if ui.checkbox(&mut self.motion.open, "🎞 Motion Editor").clicked() {
+                    ui.close();
+                }
+                ui.separator();
                 ui.menu_button(format!("Visual: {}", self.view.visual_mode.label()), |ui| {
                     for m in DisplayMode::ALL {
                         if ui.selectable_value(&mut self.view.visual_mode, m, m.label()).clicked() {

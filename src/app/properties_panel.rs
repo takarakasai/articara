@@ -1597,6 +1597,7 @@ impl ArticaraApp {
 
                 let mut to_remove_seq: Option<usize> = None;
                 let mut to_play_seq: Option<usize> = None;
+                let mut to_edit_seq: Option<usize> = None;
                 let mut to_remove_step: Option<(usize, usize)> = None;
                 let mut to_add_step: Option<(usize, String)> = None;
 
@@ -1623,6 +1624,13 @@ impl ArticaraApp {
                                 .clicked()
                             {
                                 to_play_seq = Some(si);
+                            }
+                            if ui
+                                .button("🎞 Edit")
+                                .on_hover_text("Open in the motion editor (timeline, preview, limit checks).")
+                                .clicked()
+                            {
+                                to_edit_seq = Some(si);
                             }
                             if ui
                                 .small_button("🗑")
@@ -1755,6 +1763,9 @@ impl ArticaraApp {
                     }
                 }
 
+                if let Some(si) = to_edit_seq {
+                    self.open_motion_editor(si);
+                }
                 #[cfg(feature = "mujoco")]
                 if let Some(si) = to_play_seq {
                     let seq_name = model.sequences[si].name.clone();

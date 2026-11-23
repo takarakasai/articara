@@ -62,6 +62,15 @@ tooling but are treated as **lossy derivatives** of the `.misa` master.
 - **`.misa` master format** — single-file robot description in TOML
   (kinematics + geometry + sensors + actuators + editor metadata),
   via the [`misarta::native`](misarta/src/native/) module.
+- **Motion editor** (*View → Motion Editor*, or **🎞 Edit** on a sequence) —
+  puts a sequence on a timeline: kinematic preview by scrubbing / playing
+  (no simulation needed), keyframes added from the current posture,
+  dragged in time, re-captured or deleted, per-segment curves, plots of
+  position / velocity / required torque per joint, and a check that lists
+  every interval breaking a joint's range, declared `velocity` or declared
+  `effort` (torque from fixed-base inverse dynamics). Exports the joint
+  trajectory as CSV for running on hardware. Core in
+  [`src/motion.rs`](src/motion.rs).
 - **Multi-format model loading** — `.misa` (native), URDF, MJCF (MuJoCo XML),
   USD, SDF. Legacy URDF + `.misarta.toml` sidecar workflows continue to work.
 - **glTF 2.0 (`.glb` / `.gltf`) import & export** — exports the posed robot

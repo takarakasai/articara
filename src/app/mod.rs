@@ -482,6 +482,9 @@ pub struct ArticaraApp {
     /// CSV-export dialog). See [`peaks_plot_window::PeaksPlotState`].
     #[cfg(feature = "mujoco")]
     peaks_plot: peaks_plot_window::PeaksPlotState,
+    /// Motion editor (timeline over a sequence). See
+    /// [`motion_editor::MotionEditorState`].
+    motion: motion_editor::MotionEditorState,
     /// File path for sim config save/load.
     sim_config_path: String,
     // --- Posture save/load ---
@@ -654,6 +657,7 @@ impl ArticaraApp {
             #[cfg(feature = "mujoco")]
             #[cfg(feature = "mujoco")]
             peaks_plot: peaks_plot_window::PeaksPlotState::default(),
+            motion: motion_editor::MotionEditorState::default(),
             sim_config_path: String::new(),
             posture_path: String::new(),
             dialogs: file_dialog::DialogState::default(),
@@ -1806,6 +1810,7 @@ mod history_panel;
 mod joint_sliders;
 mod menu_bar;
 mod misa_report_dialog;
+mod motion_editor;
 #[cfg(feature = "mujoco")]
 mod mujoco_warning_dialog;
 #[cfg(feature = "mujoco")]
@@ -1928,6 +1933,9 @@ impl eframe::App for ArticaraApp {
 
         // --- Script console (docked bottom panel, above status bar) ---
         self.draw_script_console(ui);
+
+        // --- Motion editor (docked bottom panel) ---
+        self.draw_motion_editor(ui);
 
         // Left panel: tree + joint sliders
         egui::Panel::left("tree_panel")
