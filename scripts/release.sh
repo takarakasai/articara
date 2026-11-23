@@ -54,7 +54,9 @@ fetch_mujoco() {
             curl -fsSL -o "$dir/mujoco.zip" "$MUJOCO_URL/mujoco-$MUJOCO_VERSION-windows-x86_64.zip"
             local root=$dir/mujoco-$MUJOCO_VERSION
             mkdir -p "$root"
-            unzip -q "$dir/mujoco.zip" -d "$root"
+            # The archive uses `\` separators, which unzip only warns
+            # about (exit 1); 7-Zip reads it cleanly.
+            7z x -y -bso0 -o"$(native_path "$root")" "$(native_path "$dir/mujoco.zip")" >&2
             # Some archives wrap everything in a top-level folder.
             if [ ! -f "$root/lib/mujoco.lib" ]; then
                 root=$(dirname "$(dirname "$(find "$root" -name mujoco.lib | head -1)")")
