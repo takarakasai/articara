@@ -2,6 +2,9 @@ name: CI
 
 on: [push, pull_request]
 
+# Every cargo invocation passes `--locked`: a Cargo.toml change that wasn't
+# reflected in Cargo.lock fails with a clear message instead of a confusing
+# resolution error later.
 env:
   CARGO_TERM_COLOR: always
   # Warning-zero policy: any rustc warning in this repo is a regression.
@@ -14,7 +17,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive # models/unitree_go2 (go2.misa + meshes)
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0 # keep in sync with rust-toolchain.toml
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci
@@ -32,13 +37,13 @@ jobs:
           curl -sL https://github.com/google-deepmind/mujoco/releases/download/3.8.0/mujoco-3.8.0-linux-x86_64.tar.gz \
             | tar -xz -C ~/.mujoco
       - name: Build (default features)
-        run: cargo build
+        run: cargo build --locked
       # --all-targets so the mujoco-gated examples (incl. the policy
       # sim-deploy) can't rot unnoticed; policy-sim pulls policy-runtime.
       - name: Check (mujoco + policy-sim, all targets)
-        run: cargo xtask check --features mujoco,policy-sim --all-targets
+        run: cargo xtask check --locked --features mujoco,policy-sim --all-targets
       - name: Test (default features)
-        run: cargo test
+        run: cargo test --locked
 
   # The mujoco-gated integration suites (wbc_walk, gait_walk_stability,
   # integration_walk, ...) don't run under a default `cargo test`; this
@@ -50,7 +55,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0 # keep in sync with rust-toolchain.toml
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci
@@ -67,7 +74,7 @@ jobs:
           curl -sL https://github.com/google-deepmind/mujoco/releases/download/3.8.0/mujoco-3.8.0-linux-x86_64.tar.gz \
             | tar -xz -C ~/.mujoco
       - name: Test (mujoco)
-        run: cargo xtask test --features mujoco --tests
+        run: cargo xtask test --locked --features mujoco --tests
 
   # Coverage over the full test set (mujoco feature on, so the gated
   # integration suites run too; xtask injects the MuJoCo env). Only
@@ -82,8 +89,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.100.0 # keep in sync with rust-toolchain.toml
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
@@ -102,7 +110,7 @@ jobs:
           curl -sL https://github.com/google-deepmind/mujoco/releases/download/3.8.0/mujoco-3.8.0-linux-x86_64.tar.gz \
             | tar -xz -C ~/.mujoco
       - name: Measure coverage
-        run: cargo xtask llvm-cov --features mujoco --lcov --output-path lcov.info
+        run: cargo xtask llvm-cov --locked --features mujoco --lcov --output-path lcov.info
       - uses: codecov/codecov-action@v5
         with:
           files: lcov.info

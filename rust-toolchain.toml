@@ -1,0 +1,6 @@
+# Pin the toolchain so a new stable release can't break the `-D warnings`
+# CI build (or local builds) without notice. Bump deliberately: change the
+# version here, fix any new warnings, and land both together.
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]

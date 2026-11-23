@@ -13,7 +13,8 @@ import / export targets.
 
 ### Prerequisites
 
-- **Rust 1.85 or newer** (the workspace uses edition 2024). Install via
+- **Rust 1.100.0**, pinned in [`rust-toolchain.toml`](rust-toolchain.toml)
+  (rustup picks it up automatically; CI uses the same version). Install via
   [rustup](https://rustup.rs/):
   `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - **MuJoCo 3.8.0** — only needed for the `--features mujoco` physics
