@@ -7,9 +7,12 @@
 # MuJoCo's default one a running toe goes through a few-mm box and is clamped (§66).
 # Compare conditions with nom of this battery. Env ONLY="name ..." runs a subset; EXTRA="K=V ..." is added to every condition;
 # SEED0=N runs seeds N+1..N+16 instead (fresh members; default 0).
+# The pushes land at step 12 (right-foot stance): pr* push toward the stance side (the swing foot has to
+# cross), pl* away from it. pl3x / pl6x (added 11-23, §73) push left at step 13 (left-foot stance), the
+# crossing case on the other side.
 L=$(cd "$(dirname "$0")" && pwd); O=${1:?outdir}; B=${2:-log/claude_g1rand_20260925/kyo46rs_walk_tu76}
 export WALK_BIN=$B
-P="PUSH_STEP=12 PUSH_AT=0.5"
+P="PUSH_STEP=12 PUSH_AT=0.5"; PX="PUSH_STEP=13 PUSH_AT=0.5"
 CONDS=(
   "nom|"
   "mu60|MU_GROUND=0.60" "mu50|MU_GROUND=0.50" "mu40|MU_GROUND=0.40"
@@ -20,6 +23,7 @@ CONDS=(
   "pl3|PUSH_IMPULSE=3 PUSH_DEG=90 $P" "pr3|PUSH_IMPULSE=3 PUSH_DEG=270 $P"
   "pf6|PUSH_IMPULSE=6 PUSH_DEG=0 $P" "pb6|PUSH_IMPULSE=6 PUSH_DEG=180 $P"
   "pl6|PUSH_IMPULSE=6 PUSH_DEG=90 $P" "pr6|PUSH_IMPULSE=6 PUSH_DEG=270 $P"
+  "pl3x|PUSH_IMPULSE=3 PUSH_DEG=90 $PX" "pl6x|PUSH_IMPULSE=6 PUSH_DEG=90 $PX"
 )
 for c in "${CONDS[@]}"; do n=${c%%|*}; x=${c#*|}
   [ -n "${ONLY:-}" ] && [[ " $ONLY " != *" $n "* ]] && continue
