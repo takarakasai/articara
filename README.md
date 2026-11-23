@@ -9,6 +9,28 @@ constraints, and editor metadata (poses, sequences, gaits, home pose) in a
 single TOML file. URDF / SDF / MJCF / USD / glTF are supported as derivative
 import / export targets.
 
+## Download
+
+Prebuilt binaries are attached to each
+[GitHub Release](https://github.com/takarakasai/articara/releases) for
+Linux (x86_64), Windows (x86_64) and macOS (Apple Silicon and Intel), in
+two variants:
+
+| Archive | Contents |
+| --- | --- |
+| `articara-<version>-<platform>` | Editor and viewer, scripting, glTF / URDF / MJCF / SDF / USD / `.misa`, motion editor (plan side). No simulation. |
+| `articara-<version>-<platform>-mujoco` | Everything above plus MuJoCo simulation (Run in MuJoCo, sweeps, gait / WBC sims); the MuJoCo runtime is bundled next to the binary — keep the folder together. |
+
+Unpack and run `articara` (`articara.exe` on Windows); a model path can be
+given as the first argument. The macOS builds are not notarized: the first
+time, open them with right-click → Open (or
+`xattr -dr com.apple.quarantine <folder>`). `SHA256SUMS` lists the
+archives' checksums.
+
+Releases are built by [`.github/workflows/release.yml`](.github/workflows/release.yml)
+when a `v*` tag is pushed (`git tag v0.2.0 && git push origin v0.2.0`);
+"Run workflow" in the Actions tab does a trial build without publishing.
+
 ## Build
 
 ### Prerequisites
