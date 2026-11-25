@@ -7,7 +7,7 @@ WR08（`BASELINE_RUN_WR08.md`）の走りに、遅れの自動の見積もりを
   - `SENSE_PRED_DITHER_T=1.0`: 揺らぎと同定は 1 s で止め、見積もりを保持する（揺らぎを入れ続けると摩擦・雑音・荷物で損、§74）。
   - 遅れのない機体では L = 0 で予測 3 になり、WR08 と同じ長さ。違いは最初の 1 s の揺らぎだけ。
 - バイナリ: `log/claude_g1rand_20260925/kyo46rs_walk_tu87`（articara に手元の misa-locomotion dbfe158 を差し込んで組んだもの。dbfe158 は 4ba73ef ＋ 2 コミット）。ノブが未設定なら tu84 と軌道が一致（走りの名目、遅れ 4＋予測 5 で cmp）。misa-biped のテストは通る。
-- **未了**: misa-locomotion の push と articara の依存の rev 上げ（push の確認待ち）。上げたら組み直して tu87 と一致を見る。
+- 11-25 に misa-locomotion dbfe158 を push、articara の依存を dbfe158 に上げて組み直した tu88 は tu87 と出力が一致（`BASELINE_RUN_WR10.md`）。
 
 wr09.sh（歩幅 0.072／0.096／0.12、各 16 本）:
 
