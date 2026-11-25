@@ -44,7 +44,7 @@
 //!   properties on a node (see [`NodeProps`]) turn its joint into a
 //!   revolute / continuous / prismatic one and set limits, mass and
 //!   collision, so a robot can be assembled in Blender. Animations that
-//!   move those joints become poses (`<animation>/<k>`, one per keyframe)
+//!   move those joints become poses (`<animation>_<k>`, one per keyframe)
 //!   chained by a sequence `<animation>`.
 
 use std::collections::{HashMap, HashSet};
@@ -1324,7 +1324,12 @@ impl GenericImport<'_> {
         let world = parent_world * node_matrix(&node);
         let (rigid, residual) = link_frame(&world);
 
-        let base = node.name().map(str::to_string).unwrap_or_else(|| format!("node_{}", node.index()));
+        // `.misa` names are identifiers; Blender's `Cube.001` would be
+        // renamed on every save / load otherwise.
+        let base = node
+            .name()
+            .map(|n| misarta::native::sanitize_identifier(n).0)
+            .unwrap_or_else(|| format!("node_{}", node.index()));
         let link_name = unique_name(&base, &mut self.link_names);
         let props = NodeProps::from_node(&node);
         let mut link = mn::Link {
@@ -1378,7 +1383,11 @@ impl GenericImport<'_> {
             mn::JointKind::Revolute => (-std::f64::consts::PI, std::f64::consts::PI),
             _ => (0.0, 0.0),
         };
-        let joint_base = props.joint_name.clone().unwrap_or_else(|| format!("{link_name}_joint"));
+        let joint_base = props
+            .joint_name
+            .as_deref()
+            .map(|n| misarta::native::sanitize_identifier(n).0)
+            .unwrap_or_else(|| format!("{link_name}_joint"));
         let joint_name = unique_name(&joint_base, &mut self.joint_names);
         let origin = parent_rigid.inverse() * rigid;
         if kind != mn::JointKind::Fixed {
@@ -1577,7 +1586,7 @@ impl Track {
 }
 
 /// Turn the file's animations into articara poses and sequences: each
-/// animation's keyframe times become poses `<animation>/<k>` (joint values
+/// animation's keyframe times become poses `<animation>_<k>` (joint values
 /// recovered from the animated node transforms) chained by a sequence
 /// `<animation>` with linear steps. Only nodes that became movable joints
 /// can be represented; motion of other nodes is reported and dropped.
@@ -1599,7 +1608,10 @@ fn import_animations(
             .filter(|t| !joint_nodes.contains(&t.node))
             .map(|t| t.node)
             .collect();
-        let anim_name = anim.name().map(str::to_string).unwrap_or_else(|| format!("animation_{ai}"));
+        let anim_name = anim
+            .name()
+            .map(|n| misarta::native::sanitize_identifier(n).0)
+            .unwrap_or_else(|| format!("animation_{ai}"));
         if !dropped.is_empty() {
             log::warn!(
                 "glTF import: animation '{anim_name}' moves {} node(s) that are not movable joints; that motion is dropped",
@@ -1685,7 +1697,7 @@ fn import_animations(
         let mut steps = Vec::with_capacity(keys.len());
         let mut t_prev = 0.0;
         for (k, (angles, &t)) in keys.into_iter().zip(&times).enumerate() {
-            let pose_name = unique_name(&format!("{anim_name}/{k}"), &mut pose_names);
+            let pose_name = unique_name(&format!("{anim_name}_{k}"), &mut pose_names);
             let duration = (t - t_prev).max(0.0) as f64;
             t_prev = t;
             model.poses.push(NamedPose {
@@ -2028,7 +2040,7 @@ mod tests {
         let seq = &model.sequences[0];
         assert_eq!(seq.name, "wave");
         let names: Vec<_> = seq.steps.iter().map(|s| s.pose_name.as_str()).collect();
-        assert_eq!(names, ["wave/0", "wave/1", "wave/2"]);
+        assert_eq!(names, ["wave_0", "wave_1", "wave_2"]);
         let durations: Vec<f64> = seq.steps.iter().map(|s| s.duration).collect();
         assert_eq!(durations, [0.0, 0.5, 0.5]);
 
@@ -2037,13 +2049,13 @@ mod tests {
         };
         let deg = |d: f32| d * PI / 180.0;
         for (k, (e, w)) in [(0.0, 0.0), (45.0, 170.0), (90.0, 340.0)].into_iter().enumerate() {
-            let pose = format!("wave/{k}");
+            let pose = format!("wave_{k}");
             assert!((angle(&pose, "elbow") - deg(e)).abs() < 1e-4, "{pose} elbow");
             assert!((angle(&pose, "wheel_joint") - deg(w)).abs() < 1e-4, "{pose} wheel {}", angle(&pose, "wheel_joint"));
         }
 
         // Replaying the last pose reproduces the animated end state.
-        let last = model.poses.iter().find(|p| p.name == "wave/2").unwrap();
+        let last = model.poses.iter().find(|p| p.name == "wave_2").unwrap();
         let mut posed = model.clone();
         posed.joint_positions = last.to_vector(&model, &model.joint_positions);
         let r = posed.compute_transforms()["arm"].rotation;

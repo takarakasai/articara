@@ -1,0 +1,95 @@
+name: Release
+
+# Pushing a tag `v*` builds articara for Linux, Windows and macOS (Apple
+# Silicon and Intel), in two variants each — `lite` (no MuJoCo) and
+# `mujoco` (MuJoCo runtime bundled) — smoke-tests every package, and
+# publishes them with SHA256SUMS as a GitHub Release.
+# "Run workflow" (workflow_dispatch) does the same without publishing:
+# the packages are kept as workflow artifacts for a trial run.
+#
+# The steps live in scripts/release.sh so they can be run locally.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Smaller release binaries; debug info is of little use to end users.
+  CARGO_PROFILE_RELEASE_STRIP: symbols
+
+jobs:
+  build:
+    name: ${{ matrix.platform.name }} (${{ matrix.variant }})
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [lite, mujoco]
+        platform:
+          # 22.04 keeps the glibc requirement low for older distributions.
+          - { name: linux-x86_64, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { name: windows-x86_64, os: windows-2022, target: x86_64-pc-windows-msvc }
+          # (macos-14 images are retired.)
+          - { name: macos-arm64, os: macos-15, target: aarch64-apple-darwin }
+          # Built on Apple Silicon for Intel; smoke-tested under Rosetta.
+          - { name: macos-x86_64, os: macos-15, target: x86_64-apple-darwin }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0 # keep in sync with rust-toolchain.toml
+          targets: ${{ matrix.platform.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.platform.target }}-${{ matrix.variant }}
+      - name: Package name
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then version=$GITHUB_REF_NAME; else version=dev-${GITHUB_SHA::7}; fi
+          suffix=$([ "${{ matrix.variant }}" = mujoco ] && echo "-mujoco" || true)
+          echo "PKG=articara-$version-${{ matrix.platform.name }}$suffix" >> "$GITHUB_ENV"
+      - name: Fetch MuJoCo runtime
+        if: matrix.variant == 'mujoco'
+        run: scripts/release.sh fetch-mujoco "$RUNNER_TEMP/mujoco" >> "$GITHUB_ENV"
+      - name: Build
+        run: scripts/release.sh build ${{ matrix.variant }} ${{ matrix.platform.target }}
+      - name: Package
+        run: |
+          archive=$(scripts/release.sh package ${{ matrix.variant }} ${{ matrix.platform.target }} "$PKG" "$RUNNER_TEMP/dist")
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+      - name: Smoke test (packaged binary, bundled runtime only)
+        run: scripts/release.sh smoke ${{ matrix.variant }} ${{ matrix.platform.target }} "$RUNNER_TEMP/dist/$PKG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "articara $GITHUB_REF_NAME" \
+            --generate-notes

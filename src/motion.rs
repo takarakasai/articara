@@ -123,7 +123,7 @@ pub fn keyframe_times(seq: &Sequence) -> Vec<f64> {
 }
 
 /// Insert a keyframe at absolute time `time` holding `angles`: a new pose
-/// (named `<sequence>/k<n>`, unique) is added to the model and a step
+/// (named `<sequence>_k<n>`, unique and a valid `.misa` identifier) is added to the model and a step
 /// targeting it is spliced in, keeping every existing keyframe's absolute
 /// time. Past the end the sequence is extended. Returns the step index.
 pub fn insert_keyframe(
@@ -136,7 +136,7 @@ pub fn insert_keyframe(
     let seq_name = model.sequences[seq_idx].name.clone();
     let mut n = model.sequences[seq_idx].steps.len();
     let pose_name = loop {
-        let name = format!("{seq_name}/k{n}");
+        let (name, _) = misarta::native::sanitize_identifier(&format!("{seq_name}_k{n}"));
         if !model.poses.iter().any(|p| p.name == name) {
             break name;
         }
@@ -260,6 +260,20 @@ pub fn tracking_error(plan: &Trajectory, actual: &Series) -> Vec<(usize, f64, f6
     out
 }
 
+/// Fixed-base inverse dynamics `τ = M(q)·q̈ + h(q, q̇)` at the model's
+/// current joint positions; `qd` / `qdd` are full joint vectors, `order`
+/// from [`crate::rbd::dynamics::topological_joint_order`]. Returns a full
+/// joint vector (0 for fixed joints).
+pub fn inverse_dynamics(work: &RobotModel, order: &[usize], qd: &[f64], qdd: &[f64]) -> Vec<f64> {
+    let mc = work.mc();
+    let velocities: HashMap<usize, f64> = order.iter().map(|&ji| (ji, qd[ji])).collect();
+    let (m, idx) = crate::rbd::dynamics::crba(work, order, mc);
+    let h = crate::rbd::dynamics::rnea_bias_with_mc(work, order, &velocities, mc);
+    let qdd_sub = nalgebra::DVector::from_iterator(order.len(), order.iter().map(|&ji| qdd[ji]));
+    let tau = m * qdd_sub + h;
+    (0..work.joints.len()).map(|ji| idx.get(ji).copied().flatten().map_or(0.0, |i| tau[i])).collect()
+}
+
 /// Sample `traj` every `dt` seconds (always including the end), with
 /// mimic joints enforced and torques from inverse dynamics. The base is
 /// held fixed: torques are exact for arms and for legs in the air, not
@@ -286,16 +300,11 @@ pub fn sample_series(model: &RobotModel, traj: &Trajectory, dt: f64) -> Series {
         let (q, qd, qdd) = traj.sample(t);
         work.joint_positions = q;
         work.enforce_mimic();
-        let mc = work.mc();
-        let velocities: HashMap<usize, f64> = order.iter().map(|&ji| (ji, qd[ji])).collect();
-        let (m, idx) = crate::rbd::dynamics::crba(&work, &order, mc);
-        let h = crate::rbd::dynamics::rnea_bias_with_mc(&work, &order, &velocities, mc);
-        let qdd_sub = nalgebra::DVector::from_iterator(order.len(), order.iter().map(|&ji| qdd[ji]));
-        let tau = m * qdd_sub + h;
+        let tau = inverse_dynamics(&work, &order, &qd, &qdd);
         for (c, &ji) in joints.iter().enumerate() {
             series.q[c].push(work.joint_positions[ji]);
             series.qd[c].push(qd[ji]);
-            series.tau[c].push(idx.get(ji).copied().flatten().map_or(0.0, |i| tau[i]));
+            series.tau[c].push(tau[ji]);
         }
     }
     series
@@ -506,8 +515,10 @@ mod tests {
         let k = insert_keyframe(&mut model, 0, 2.0, pose("x", 0.1).angles, InterpolationKind::CubicSmooth);
         assert_eq!(k, 1);
         assert_eq!(keyframe_times(&model.sequences[0]), [1.0, 2.0, 3.0]);
-        assert_eq!(model.sequences[0].steps[1].pose_name, "s/k2");
-        assert!(model.poses.iter().any(|p| p.name == "s/k2"));
+        assert_eq!(model.sequences[0].steps[1].pose_name, "s_k2");
+        assert!(model.poses.iter().any(|p| p.name == "s_k2"));
+        // Names survive a `.misa` save / load unchanged.
+        assert!(model.poses.iter().all(|p| misarta::native::is_valid_identifier(&p.name)));
 
         // Past the end extends the sequence.
         insert_keyframe(&mut model, 0, 4.5, BTreeMap::new(), InterpolationKind::Linear);

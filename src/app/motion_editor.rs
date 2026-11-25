@@ -15,6 +15,11 @@
 //! them — the physical torques include contact, which the plan's
 //! fixed-base estimate can't — plus per-joint tracking error and base
 //! height / tilt. Edit, run again, compare: the loop before real hardware.
+//!
+//! Runs are kept per sequence with a snapshot of the plan they executed:
+//! overlay any of them, compare their headline numbers in a table, restore
+//! the plan of a good one, and save / load them as CSV
+//! ([`articara::motion_run`]) — the same format a hardware log can use.
 
 use std::hash::{Hash, Hasher};
 
@@ -22,6 +27,8 @@ use eframe::egui;
 use egui_plot::{HLine, Line, LineStyle, Plot, PlotPoints, VLine};
 
 use articara::motion::{self, Issue, IssueKind, Series, Trajectory};
+use articara::motion_export::{Feedforward, HardwareExport};
+use articara::motion_run::{Criteria, PlanSnapshot, RunRecord, RunSummary};
 use misarta::trajectory::InterpolationKind;
 
 use super::ArticaraApp;
@@ -59,16 +66,16 @@ enum RunBase {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResultTab {
     Plan,
-    Sim,
+    Runs,
 }
 
-/// One MuJoCo run of a sequence and what was recorded. Times are plan time
-/// (sim time minus the settle period), so they line up with the timeline.
-#[cfg_attr(not(feature = "mujoco"), allow(dead_code))]
-struct SimRun {
-    seq: usize,
-    /// Analysis key of the plan that was run; differs once it's edited.
-    plan_key: u64,
+/// A MuJoCo run being captured. Times are plan time (sim time minus the
+/// settle period), so they line up with the timeline.
+#[cfg(feature = "mujoco")]
+struct Recording {
+    sequence: String,
+    plan: PlanSnapshot,
+    source: String,
     settle: f64,
     /// Sim time at which recording stops.
     end: f64,
@@ -78,12 +85,105 @@ struct SimRun {
     qd: Vec<Vec<f64>>,
     tau: Vec<Vec<f64>>,
     base_z: Vec<f64>,
-    /// Angle between the root link's z axis and world up (rad).
     tilt: Vec<f64>,
-    done: bool,
-    issues: Vec<Issue>,
-    /// `(joint, max |q_sim − q_plan|, time)`, worst first.
-    tracking: Vec<(usize, f64, f64)>,
+}
+
+/// A kept run and what the editor derived from it.
+struct RunEntry {
+    id: usize,
+    record: RunRecord,
+    summary: RunSummary,
+    /// Fingerprint of the plan it ran (to flag runs of an older plan).
+    plan_fp: Option<String>,
+    overlay: bool,
+}
+
+/// Values of the robustness sweep, as typed (comma-separated lists).
+#[cfg(feature = "mujoco")]
+struct SweepForm {
+    friction: String,
+    kp: String,
+    kv: String,
+    damping: String,
+    effort: String,
+    push: String,
+    /// Push direction in the world frame.
+    push_dir: [f64; 3],
+    push_at: f64,
+}
+
+#[cfg(feature = "mujoco")]
+impl Default for SweepForm {
+    fn default() -> Self {
+        Self {
+            friction: "0.4, 1.0".into(),
+            kp: "0.7, 1.4".into(),
+            kv: "0.5, 2.0".into(),
+            damping: "0, 3".into(),
+            effort: "0.8, 0.9".into(),
+            push: "20, 40".into(),
+            push_dir: [1.0, 0.0, 0.0],
+            push_at: 0.3,
+        }
+    }
+}
+
+#[cfg(feature = "mujoco")]
+impl SweepForm {
+    fn axes(&self) -> Result<Vec<articara::motion_sim::SweepAxis>, String> {
+        use articara::motion_sim::SweepAxis;
+        let list = |name: &str, text: &str| -> Result<Vec<f64>, String> {
+            text.split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(|t| t.parse::<f64>().map_err(|_| format!("{name}: '{t}' is not a number")))
+                .collect()
+        };
+        Ok(vec![
+            SweepAxis::GroundFriction(list("friction", &self.friction)?),
+            SweepAxis::KpScale(list("kp", &self.kp)?),
+            SweepAxis::KvScale(list("kv", &self.kv)?),
+            SweepAxis::DampingScale(list("damping", &self.damping)?),
+            SweepAxis::EffortScale(list("effort", &self.effort)?),
+            SweepAxis::Push { magnitudes: list("push", &self.push)?, direction: self.push_dir, at: self.push_at, duration: 0.1 },
+        ])
+    }
+}
+
+/// A sweep running on a worker thread; results arrive one by one.
+#[cfg(feature = "mujoco")]
+struct SweepJob {
+    rx: std::sync::mpsc::Receiver<Result<RunRecord, String>>,
+    total: usize,
+    received: usize,
+    /// Run ids of this sweep, to report on when it's done.
+    ids: Vec<usize>,
+}
+
+/// Feedforward choice in the export window.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FfChoice {
+    None,
+    Plan,
+    /// A kept run's recorded torque (by run id).
+    Run(usize),
+}
+
+/// Stable text fingerprint of a plan snapshot.
+fn plan_fingerprint(plan: &PlanSnapshot) -> String {
+    let mut poses: Vec<_> = plan.poses.iter().map(|p| format!("{}={:?}", p.name, p.angles)).collect();
+    poses.sort();
+    format!("{:?}|{poses:?}|{:?}", plan.sequence.steps, plan.start)
+}
+
+/// Overlay line styles, one per run so overlaid runs stay distinguishable.
+fn run_style(i: usize) -> LineStyle {
+    match i % 4 {
+        0 => LineStyle::dashed_dense(),
+        1 => LineStyle::dotted_dense(),
+        2 => LineStyle::dashed_loose(),
+        _ => LineStyle::dotted_loose(),
+    }
 }
 
 /// Recording continues this long after the sequence ends (s), to catch
@@ -116,7 +216,9 @@ pub(super) struct MotionEditorState {
     /// Joint indices shown in the plot.
     shown_joints: std::collections::BTreeSet<usize>,
     new_key_kind: InterpolationKind,
-    csv_rate_hz: f64,
+    export_open: bool,
+    export: HardwareExport,
+    export_ff: FfChoice,
     dlg_save_csv: FileDialog,
     analysis: Option<Analysis>,
     /// MuJoCo owns the joint positions this frame (preview must not write).
@@ -128,9 +230,26 @@ pub(super) struct MotionEditorState {
     run_requested: bool,
     #[cfg_attr(not(feature = "mujoco"), allow(dead_code))]
     run_base: RunBase,
-    run: Option<SimRun>,
-    show_sim: bool,
+    #[cfg(feature = "mujoco")]
+    recording: Option<Recording>,
+    runs: Vec<RunEntry>,
+    next_run_id: usize,
+    /// Run whose details show in the result panel.
+    selected_run: Option<usize>,
+    /// Shared file dialog for runs: `Some(id)` saves that run, `None` loads.
+    dlg_run: FileDialog,
+    run_dialog_save: Option<usize>,
     tab: ResultTab,
+    /// Pass / fail thresholds for the ✔ / ✖ column.
+    criteria: Criteria,
+    #[cfg(feature = "mujoco")]
+    sweep_open: bool,
+    #[cfg(feature = "mujoco")]
+    sweep_form: SweepForm,
+    #[cfg(feature = "mujoco")]
+    sweep_requested: bool,
+    #[cfg(feature = "mujoco")]
+    sweep_job: Option<SweepJob>,
 }
 
 impl Default for MotionEditorState {
@@ -148,17 +267,59 @@ impl Default for MotionEditorState {
             signal: PlotSignal::Position,
             shown_joints: Default::default(),
             new_key_kind: InterpolationKind::QuinticSmooth,
-            csv_rate_hz: 100.0,
+            export_open: false,
+            export: HardwareExport::default(),
+            export_ff: FfChoice::None,
             dlg_save_csv: FileDialog::new("dlg_save_motion_csv"),
             analysis: None,
             sim_active: false,
             settle: 1.0,
             run_requested: false,
             run_base: RunBase::Ground,
-            run: None,
-            show_sim: true,
+            #[cfg(feature = "mujoco")]
+            recording: None,
+            runs: Vec::new(),
+            next_run_id: 1,
+            selected_run: None,
+            dlg_run: FileDialog::new("dlg_motion_run"),
+            run_dialog_save: None,
             tab: ResultTab::Plan,
+            criteria: Criteria::default(),
+            #[cfg(feature = "mujoco")]
+            sweep_open: false,
+            #[cfg(feature = "mujoco")]
+            sweep_form: SweepForm::default(),
+            #[cfg(feature = "mujoco")]
+            sweep_requested: false,
+            #[cfg(feature = "mujoco")]
+            sweep_job: None,
         }
+    }
+}
+
+impl MotionEditorState {
+    /// Keep `record`, summarised against the plan it ran (its snapshot) or,
+    /// lacking one, the plan currently open.
+    fn add_run(&mut self, model: &articara::robot::RobotModel, record: RunRecord) -> &RunEntry {
+        let plan = match &record.plan {
+            Some(snapshot) => snapshot.trajectory(model).ok(),
+            None => self.sequence.and_then(|i| model.sequences.get(i)).and_then(|seq| {
+                let start = self.start_q.as_deref().unwrap_or(&model.joint_positions);
+                Trajectory::from_sequence(model, seq, start).ok()
+            }),
+        };
+        let summary = RunSummary::new(model, &record, plan.as_ref());
+        let id = self.next_run_id;
+        self.next_run_id += 1;
+        self.selected_run = Some(id);
+        self.runs.push(RunEntry {
+            id,
+            plan_fp: record.plan.as_ref().map(plan_fingerprint),
+            record,
+            summary,
+            overlay: true,
+        });
+        self.runs.last().expect("just pushed")
     }
 }
 
@@ -243,7 +404,9 @@ impl ArticaraApp {
             .show_inside(ui, |ui| {
                 edit = self.motion_editor_contents(ui, &mut model);
             });
+        self.motion_export_window(ui.ctx(), &model);
         self.motion_csv_dialog(ui.ctx(), &model);
+        self.motion_run_dialog(ui.ctx(), &model);
         self.model = Some(model);
         if let Some(desc) = edit {
             self.mark_edit(&desc);
@@ -253,9 +416,17 @@ impl ArticaraApp {
             if std::mem::take(&mut self.motion.run_requested) {
                 self.motion_run_in_mujoco();
             }
-            if self.motion.run.as_ref().is_some_and(|r| !r.done) {
+            if self.motion.recording.is_some() {
                 self.motion_record_run();
                 ui.ctx().request_repaint();
+            }
+            self.motion_sweep_window(ui.ctx());
+            if std::mem::take(&mut self.motion.sweep_requested) {
+                self.motion_start_sweep();
+            }
+            if self.motion.sweep_job.is_some() {
+                self.motion_poll_sweep();
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
     }
@@ -280,7 +451,7 @@ impl ArticaraApp {
                 return;
             }
         };
-        let plan_key = analysis_key(model, seq_idx, &start_q);
+        let plan = PlanSnapshot::capture(model, &seq, &start_q);
         // The run's conditions come from the editor, not from whatever the
         // viewport happens to show; the user's base lock is restored once
         // the sim is built.
@@ -303,10 +474,15 @@ impl ArticaraApp {
         sim.start_sequence(anim, seq.name.clone());
         self.sim.dynamics_sim_paused = false;
         self.motion.playing = false;
-        self.motion.tab = ResultTab::Sim;
-        self.motion.run = Some(SimRun {
-            seq: seq_idx,
-            plan_key,
+        self.motion.tab = ResultTab::Runs;
+        let base = match self.motion.run_base {
+            RunBase::Ground => "on ground",
+            RunBase::Fixed => "fixed base",
+        };
+        self.motion.recording = Some(Recording {
+            sequence: seq.name.clone(),
+            plan,
+            source: format!("MuJoCo, {base}, settle {:.2} s", self.motion.settle),
             settle: self.motion.settle,
             end,
             last_sim_time: f64::NEG_INFINITY,
@@ -316,9 +492,6 @@ impl ArticaraApp {
             tau: Vec::new(),
             base_z: Vec::new(),
             tilt: Vec::new(),
-            done: false,
-            issues: Vec::new(),
-            tracking: Vec::new(),
         });
         self.status_message = format!("MuJoCo: running '{}' after {:.1} s settle", seq.name, self.motion.settle);
     }
@@ -327,55 +500,263 @@ impl ArticaraApp {
     /// (plus a short tail) has played or the sim was stopped.
     #[cfg(feature = "mujoco")]
     fn motion_record_run(&mut self) {
-        let Some(run) = self.motion.run.as_mut() else { return };
-        let Some(sim) = self.sim.mujoco_sim.as_ref() else {
-            run.done = true;
-            return self.motion_finish_run();
-        };
-        let since = run.last_sim_time;
-        for f in sim.trace().filter(|f| f.time > since) {
-            run.last_sim_time = f.time;
-            let t = f.time - run.settle;
-            // Before the sequence starts the robot is only settling.
-            if t < 0.0 {
-                continue;
+        let Some(rec) = self.motion.recording.as_mut() else { return };
+        let finished = match self.sim.mujoco_sim.as_ref() {
+            None => true,
+            Some(sim) => {
+                let since = rec.last_sim_time;
+                for f in sim.trace().filter(|f| f.time > since) {
+                    rec.last_sim_time = f.time;
+                    let t = f.time - rec.settle;
+                    // Before the sequence starts the robot is only settling.
+                    if t < 0.0 {
+                        continue;
+                    }
+                    rec.times.push(t);
+                    rec.q.push(f.q.clone());
+                    rec.qd.push(f.qvel.clone());
+                    rec.tau.push(f.tau.clone());
+                    rec.base_z.push(f.base_pos.map_or(f64::NAN, |p| p[2]));
+                    rec.tilt.push(f.base_quat.map_or(f64::NAN, |[_, x, y, _]| (1.0 - 2.0 * (x * x + y * y)).clamp(-1.0, 1.0).acos()));
+                }
+                // Follow the sim on the timeline.
+                self.motion.time = (rec.last_sim_time - rec.settle).max(0.0);
+                rec.last_sim_time >= rec.end
             }
-            run.times.push(t);
-            run.q.push(f.q.clone());
-            run.qd.push(f.qvel.clone());
-            run.tau.push(f.tau.clone());
-            run.base_z.push(f.base_pos.map_or(f64::NAN, |p| p[2]));
-            run.tilt.push(f.base_quat.map_or(f64::NAN, |[_, x, y, _]| (1.0 - 2.0 * (x * x + y * y)).clamp(-1.0, 1.0).acos()));
+        };
+        if !finished {
+            return;
         }
-        // Follow the sim on the timeline.
-        self.motion.time = (run.last_sim_time - run.settle).max(0.0);
-        if run.last_sim_time >= run.end {
-            run.done = true;
-            self.sim.dynamics_sim_paused = true;
-            self.motion_finish_run();
-        }
-    }
-
-    #[cfg(feature = "mujoco")]
-    fn motion_finish_run(&mut self) {
-        let (Some(run), Some(model)) = (self.motion.run.as_mut(), self.model.as_ref()) else { return };
-        if run.times.is_empty() || run.seq >= model.sequences.len() {
+        self.sim.dynamics_sim_paused = true;
+        let Some(rec) = self.motion.recording.take() else { return };
+        let Some(model) = self.model.as_ref() else { return };
+        if rec.times.is_empty() {
             self.status_message = "MuJoCo run stopped before the sequence started".into();
             return;
         }
-        let series = motion::Series::from_samples(model, run.times.clone(), &run.q, &run.qd, &run.tau);
-        run.issues = motion::check(model, &series);
-        let start_q = self.motion.start_q.clone().unwrap_or_default();
-        if let Ok(plan) = Trajectory::from_sequence(model, &model.sequences[run.seq], &start_q) {
-            run.tracking = motion::tracking_error(&plan, &series);
-        }
-        let worst_tilt = run.tilt.iter().copied().filter(|v| v.is_finite()).fold(0.0, f64::max);
-        self.status_message = format!(
-            "MuJoCo run done: {} issue(s), max tracking error {:.1}°, max tilt {:.0}°",
-            run.issues.len(),
-            run.tracking.first().map_or(0.0, |t| t.1.to_degrees()),
-            worst_tilt.to_degrees()
+        let id = self.motion.next_run_id;
+        let record = RunRecord::from_rows(
+            model,
+            format!("run {id}"),
+            rec.sequence,
+            rec.source,
+            rec.times,
+            &rec.q,
+            Some(&rec.qd),
+            Some(&rec.tau),
+            Some(rec.base_z),
+            Some(rec.tilt),
+            Some(rec.plan),
         );
+        let entry = self.motion.add_run(model, record);
+        self.status_message = format!(
+            "MuJoCo {} done: {} issue(s), max tracking error {:.1}°, max tilt {:.0}°",
+            entry.record.name,
+            entry.summary.issues.len(),
+            entry.summary.tracking.first().map_or(0.0, |t| t.1.to_degrees()),
+            entry.summary.max_tilt.unwrap_or(0.0).to_degrees()
+        );
+    }
+
+    #[cfg(feature = "mujoco")]
+    fn motion_sweep_window(&mut self, ctx: &egui::Context) {
+        let st = &mut self.motion;
+        if !st.sweep_open {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("🧪 Robustness sweep").open(&mut open).resizable(false).show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new(
+                    "Runs the sequence headless under nominal conditions, then with each value below \
+                     changed alone (motor torque limits enforced). Results go to the Runs table.",
+                )
+                .small(),
+            );
+            let f = &mut st.sweep_form;
+            egui::Grid::new("sweep_form").num_columns(2).show(ui, |ui| {
+                for (label, text, tip) in [
+                    ("ground μ", &mut f.friction, "Sliding friction (nominal 0.7)"),
+                    ("kp ×", &mut f.kp, "Scale on every joint's position gain"),
+                    ("kv ×", &mut f.kv, "Scale on every joint's velocity gain"),
+                    ("damping ×", &mut f.damping, "Scale on passive joint damping"),
+                    ("effort ×", &mut f.effort, "Scale on motor torque limits (weak / hot motors)"),
+                    ("push [N]", &mut f.push, "Push on the root link for 0.1 s"),
+                ] {
+                    ui.label(label).on_hover_text(tip);
+                    ui.text_edit_singleline(text);
+                    ui.end_row();
+                }
+                ui.label("push dir / at");
+                ui.horizontal(|ui| {
+                    for (name, dir) in [("+X", [1.0, 0.0, 0.0]), ("−X", [-1.0, 0.0, 0.0]), ("+Y", [0.0, 1.0, 0.0]), ("−Y", [0.0, -1.0, 0.0])] {
+                        ui.selectable_value(&mut f.push_dir, dir, name);
+                    }
+                    ui.add(egui::DragValue::new(&mut f.push_at).range(0.0..=60.0).speed(0.01).suffix(" s"));
+                });
+                ui.end_row();
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Pass if tilt ≤");
+                let mut tilt = st.criteria.max_tilt.to_degrees();
+                if ui.add(egui::DragValue::new(&mut tilt).range(1.0..=90.0).suffix("°")).changed() {
+                    st.criteria.max_tilt = tilt.to_radians();
+                }
+                ui.label("and tracking ≤");
+                let mut track = st.criteria.max_tracking.to_degrees();
+                if ui.add(egui::DragValue::new(&mut track).range(0.1..=90.0).speed(0.1).suffix("°")).changed() {
+                    st.criteria.max_tracking = track.to_radians();
+                }
+                ui.label("and no limit issues during the motion");
+            });
+            match st.sweep_form.axes() {
+                Ok(axes) => {
+                    let n = articara::motion_sim::one_at_a_time(&Default::default(), &axes).len();
+                    match &st.sweep_job {
+                        Some(job) => {
+                            ui.add(egui::ProgressBar::new(job.received as f32 / job.total.max(1) as f32).text(format!("{}/{}", job.received, job.total)));
+                        }
+                        None => {
+                            if ui.button(format!("▶ Run {n} conditions")).clicked() {
+                                st.sweep_requested = true;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    ui.colored_label(egui::Color32::LIGHT_RED, e);
+                }
+            }
+        });
+        st.sweep_open &= open;
+    }
+
+    #[cfg(feature = "mujoco")]
+    fn motion_start_sweep(&mut self) {
+        use articara::motion_sim::{RunConditions, Support, one_at_a_time, simulate};
+        let (Some(model), Some(seq_idx)) = (self.model.as_ref(), self.motion.sequence) else { return };
+        let Some(seq) = model.sequences.get(seq_idx).cloned() else { return };
+        let axes = match self.motion.sweep_form.axes() {
+            Ok(a) => a,
+            Err(e) => {
+                self.status_message = format!("Sweep: {e}");
+                return;
+            }
+        };
+        let nominal = RunConditions {
+            support: match self.motion.run_base {
+                RunBase::Ground => Support::Ground,
+                RunBase::Fixed => Support::Fixed,
+            },
+            settle: self.motion.settle,
+            ..Default::default()
+        };
+        let conds = one_at_a_time(&nominal, &axes);
+        let start_q = self.motion.start_q.clone().unwrap_or_else(|| model.joint_positions.clone());
+        let model = model.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let total = conds.len();
+        let prefix = nominal.label();
+        std::thread::spawn(move || {
+            for cond in conds {
+                // Name by what differs from nominal.
+                let label = cond.label();
+                let name = label.strip_prefix(&prefix).map(|r| r.trim_start_matches(", ").to_string()).unwrap_or(label);
+                let name = if name.is_empty() { "nominal".to_string() } else { name };
+                if tx.send(simulate(&model, &seq, &start_q, &cond, name)).is_err() {
+                    return;
+                }
+            }
+        });
+        self.motion.sweep_job = Some(SweepJob { rx, total, received: 0, ids: Vec::new() });
+        self.motion.tab = ResultTab::Runs;
+        self.status_message = format!("Sweep: running {total} conditions…");
+    }
+
+    #[cfg(feature = "mujoco")]
+    fn motion_poll_sweep(&mut self) {
+        let Some(model) = self.model.as_ref() else { return };
+        let st = &mut self.motion;
+        let Some(job) = st.sweep_job.as_mut() else { return };
+        let mut results = Vec::new();
+        while let Ok(r) = job.rx.try_recv() {
+            results.push(r);
+        }
+        job.received += results.len();
+        let mut errors = Vec::new();
+        let mut new_ids = Vec::new();
+        for r in results {
+            match r {
+                Ok(record) => {
+                    let id = st.add_run(model, record).id;
+                    if let Some(e) = st.runs.iter_mut().find(|e| e.id == id) {
+                        // Many runs: keep the plot readable.
+                        e.overlay = false;
+                    }
+                    new_ids.push(id);
+                }
+                Err(e) => errors.push(e),
+            }
+        }
+        let Some(job) = st.sweep_job.as_mut() else { return };
+        job.ids.extend(new_ids);
+        if !errors.is_empty() {
+            self.status_message = format!("Sweep: {}", errors.join("; "));
+        }
+        if job.received >= job.total {
+            let job = st.sweep_job.take().expect("checked above");
+            let fails: Vec<String> = st
+                .runs
+                .iter()
+                .filter(|r| job.ids.contains(&r.id))
+                .filter(|r| !r.summary.verdict(&st.criteria).is_empty())
+                .map(|r| r.record.name.clone())
+                .collect();
+            self.status_message = if fails.is_empty() {
+                format!("Sweep: all {} conditions pass", job.ids.len())
+            } else {
+                format!("Sweep: {}/{} pass — fails: {}", job.ids.len() - fails.len(), job.ids.len(), fails.join(", "))
+            };
+        }
+    }
+
+    /// Load / save run CSVs.
+    fn motion_run_dialog(&mut self, ctx: &egui::Context, model: &articara::robot::RobotModel) {
+        let FileDialogResult::Confirmed(path) = self.motion.dlg_run.show(ctx) else { return };
+        let st = &mut self.motion;
+        self.status_message = match st.run_dialog_save.take() {
+            Some(id) => match st.runs.iter().find(|r| r.id == id) {
+                Some(run) => match std::fs::write(&path, run.record.to_csv()) {
+                    Ok(()) => format!("Saved {} → {}", run.record.name, path.display()),
+                    Err(e) => format!("Save run: {e}"),
+                },
+                None => "Save run: the run is gone".into(),
+            },
+            None => match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| RunRecord::from_csv(&t)) {
+                Ok(mut record) => {
+                    if record.name == "imported" {
+                        record.name = path.file_stem().map_or("imported".into(), |s| s.to_string_lossy().into_owned());
+                    }
+                    // A log without a sequence name belongs to the open one.
+                    if record.sequence.is_empty() {
+                        if let Some(seq) = st.sequence.and_then(|i| model.sequences.get(i)) {
+                            record.sequence = seq.name.clone();
+                        }
+                    }
+                    let missing = record.joints.iter().filter(|j| !model.joint_map.contains_key(j.as_str())).count();
+                    st.tab = ResultTab::Runs;
+                    let entry = st.add_run(model, record);
+                    format!(
+                        "Loaded {} ({} samples){}",
+                        entry.record.name,
+                        entry.record.times.len(),
+                        if missing > 0 { format!(" — {missing} column(s) match no joint") } else { String::new() }
+                    )
+                }
+                Err(e) => format!("Load run: {e}"),
+            },
+        };
     }
 
     fn motion_editor_contents(
@@ -417,6 +798,35 @@ impl ArticaraApp {
                 st.start_q = None;
                 st.time = 0.0;
                 edit = Some(format!("Create sequence '{name}'"));
+            }
+            #[cfg(feature = "mujoco")]
+            {
+                ui.separator();
+                let recording = st.recording.is_some();
+                let has_steps = st.sequence.and_then(|i| model.sequences.get(i)).is_some_and(|s| !s.steps.is_empty());
+                if ui
+                    .add_enabled(!recording && has_steps, egui::Button::new("🦾 Run in MuJoCo"))
+                    .on_hover_text("Restart MuJoCo at the start pose, hold it for the settle time, play this sequence and record q / q̇ / τ to compare with the plan")
+                    .clicked()
+                {
+                    st.run_requested = true;
+                }
+                egui::ComboBox::from_id_salt("motion_run_base")
+                    .selected_text(match st.run_base {
+                        RunBase::Ground => "On ground",
+                        RunBase::Fixed => "Fixed base",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut st.run_base, RunBase::Ground, "On ground")
+                            .on_hover_text("Free base standing on a ground plane");
+                        ui.selectable_value(&mut st.run_base, RunBase::Fixed, "Fixed base")
+                            .on_hover_text("Base held in place: a hanging test for limb motions");
+                    });
+                ui.add(egui::DragValue::new(&mut st.settle).range(0.0..=5.0).speed(0.05).prefix("settle ").suffix(" s"))
+                    .on_hover_text("Hold the start pose this long before the sequence starts (lets a legged robot land)");
+                if recording {
+                    ui.spinner();
+                }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("✖").on_hover_text("Close the motion editor").clicked() {
@@ -553,39 +963,14 @@ impl ArticaraApp {
                 }
             }
 
-            #[cfg(feature = "mujoco")]
-            {
-                ui.separator();
-                let recording = st.run.as_ref().is_some_and(|r| !r.done);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add_enabled(!recording && !key_times.is_empty(), egui::Button::new("🦾 Run in MuJoCo"))
-                    .on_hover_text("Restart MuJoCo at the start pose, hold it for the settle time, play this sequence and record q / q̇ / τ to compare with the plan")
+                    .button("📤 Export…")
+                    .on_hover_text("Export the trajectory for a real controller: its rate, target velocities, torque feedforward, hold times")
                     .clicked()
                 {
-                    st.run_requested = true;
+                    st.export_open = true;
                 }
-                egui::ComboBox::from_id_salt("motion_run_base")
-                    .selected_text(match st.run_base {
-                        RunBase::Ground => "On ground",
-                        RunBase::Fixed => "Fixed base",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut st.run_base, RunBase::Ground, "On ground")
-                            .on_hover_text("Free base standing on a ground plane");
-                        ui.selectable_value(&mut st.run_base, RunBase::Fixed, "Fixed base")
-                            .on_hover_text("Base held in place: a hanging test for limb motions");
-                    });
-                ui.add(egui::DragValue::new(&mut st.settle).range(0.0..=5.0).speed(0.05).prefix("settle ").suffix(" s"))
-                    .on_hover_text("Hold the start pose this long before the sequence starts (lets a legged robot land)");
-                if recording {
-                    ui.spinner();
-                }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("💾 CSV…").on_hover_text("Export the joint trajectory (time + one column per joint, rad / m)").clicked() {
-                    st.dlg_save_csv.open("Export trajectory CSV", FileDialogMode::Save, None, &["csv"]);
-                }
-                ui.add(egui::DragValue::new(&mut st.csv_rate_hz).range(1.0..=2000.0).speed(10.0).suffix(" Hz"));
                 if ui.button("Start = current").on_hover_text("Use the current posture as the sequence's starting point").clicked() {
                     st.playing = false;
                     st.start_q = Some(model.joint_positions.clone());
@@ -614,8 +999,15 @@ impl ArticaraApp {
                 issue_color(issue.kind),
             );
         }
-        if let Some(run) = st.run.as_ref().filter(|r| r.seq == seq_idx && r.done) {
-            for issue in &run.issues {
+        let seq_name = model.sequences[seq_idx].name.clone();
+        let current_fp = plan_fingerprint(&PlanSnapshot::capture(model, &model.sequences[seq_idx], &start_q));
+        let mut run_action: Option<RunAction> = None;
+        let selected = st
+            .selected_run
+            .and_then(|id| st.runs.iter().find(|r| r.id == id))
+            .filter(|r| r.record.sequence == seq_name);
+        if let Some(run) = selected {
+            for issue in &run.summary.issues {
                 let (x0, x1) = (x_of(issue.t_start), x_of(issue.t_end).max(x_of(issue.t_start) + 2.0));
                 painter.rect_filled(
                     egui::Rect::from_min_max(egui::pos2(x0, rect.bottom() - 12.0), egui::pos2(x1, rect.bottom() - 8.0)),
@@ -717,8 +1109,8 @@ impl ArticaraApp {
             });
             ui.separator();
 
-            // Issue list on the right; the plot takes what's left.
-            let plot_width = (ui.available_width() - 270.0).max(200.0);
+            // Results on the right; the plot takes what's left.
+            let plot_width = (ui.available_width() - 470.0).max(200.0);
             ui.vertical(|ui| {
                 ui.set_width(plot_width);
                 if let Some(series) = series {
@@ -751,26 +1143,25 @@ impl ArticaraApp {
                             for b in bounds {
                                 plot_ui.hline(HLine::new("", b * scale).color(color.gamma_multiply(0.6)).style(LineStyle::dashed_loose()));
                             }
-                            if let Some(run) = st.run.as_ref().filter(|r| st.show_sim && r.seq == seq_idx) {
-                                let rows = match st.signal {
-                                    PlotSignal::Position => &run.q,
-                                    PlotSignal::Velocity => &run.qd,
-                                    PlotSignal::Torque => &run.tau,
+                            let overlaid = st.runs.iter().filter(|r| r.overlay && r.record.sequence == seq_name);
+                            for (ri, run) in overlaid.enumerate() {
+                                let rec = &run.record;
+                                let Some(c) = rec.column(&joint.name) else { continue };
+                                let col = match st.signal {
+                                    PlotSignal::Position => Some(&rec.q[c]),
+                                    PlotSignal::Velocity => rec.qd.as_ref().map(|v| &v[c]),
+                                    PlotSignal::Torque => rec.tau.as_ref().map(|v| &v[c]),
                                 };
-                                // Thin out dense sim traces for drawing.
-                                let stride = (rows.len() / 2000).max(1);
-                                let pts: PlotPoints = run
-                                    .times
-                                    .iter()
-                                    .zip(rows)
-                                    .step_by(stride)
-                                    .map(|(t, r)| [*t, r.get(ji).copied().unwrap_or(f64::NAN) * scale])
-                                    .collect();
+                                let Some(col) = col else { continue };
+                                // Thin out dense traces for drawing.
+                                let stride = (col.len() / 2000).max(1);
+                                let pts: PlotPoints =
+                                    rec.times.iter().zip(col).step_by(stride).map(|(t, v)| [*t, v * scale]).collect();
                                 plot_ui.line(
-                                    Line::new(format!("{} (MuJoCo)", joint.name), pts)
+                                    Line::new(format!("{} ({})", joint.name, rec.name), pts)
                                         .color(color)
                                         .width(1.0_f32)
-                                        .style(LineStyle::dashed_dense()),
+                                        .style(run_style(ri)),
                                 );
                             }
                         }
@@ -791,49 +1182,83 @@ impl ArticaraApp {
             ui.separator();
 
             ui.vertical(|ui| {
-                let run = st.run.as_ref().filter(|r| r.seq == seq_idx);
-                if run.is_some() {
+                let n_runs = st.runs.iter().filter(|r| r.record.sequence == seq_name).count();
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut st.tab, ResultTab::Plan, "Plan");
+                    ui.selectable_value(&mut st.tab, ResultTab::Runs, format!("Runs ({n_runs})"));
+                    #[cfg(feature = "mujoco")]
+                    if ui
+                        .small_button("🧪 Sweep…")
+                        .on_hover_text("Run this sequence headless under varied conditions (friction, gains, motor torque, pushes)")
+                        .clicked()
+                    {
+                        st.sweep_open = true;
+                    }
+                    if ui
+                        .small_button("📂 Load…")
+                        .on_hover_text("Load a run CSV: a saved run, or a hardware log with a time column and one column per joint")
+                        .clicked()
+                    {
+                        st.run_dialog_save = None;
+                        st.dlg_run.open("Load run CSV", FileDialogMode::Open, None, &["csv"]);
+                    }
+                });
+                #[cfg(feature = "mujoco")]
+                if let Some(rec) = &st.recording {
                     ui.horizontal(|ui| {
-                        ui.selectable_value(&mut st.tab, ResultTab::Plan, "Plan");
-                        ui.selectable_value(&mut st.tab, ResultTab::Sim, "MuJoCo");
-                        ui.checkbox(&mut st.show_sim, "overlay");
+                        ui.spinner();
+                        ui.label(format!("Recording… {:.2} s", rec.times.last().copied().unwrap_or(0.0)));
                     });
                 }
                 let mut clicked: Option<&Issue> = None;
-                match (st.tab, run) {
-                    (ResultTab::Sim, Some(run)) if !run.done => {
-                        ui.label(format!("Recording… {:.2} s", run.times.last().copied().unwrap_or(0.0)));
-                    }
-                    (ResultTab::Sim, Some(run)) => {
-                        if run.plan_key != analysis.key {
-                            ui.colored_label(egui::Color32::YELLOW, "⟳ edited since this run — run again")
-                                .on_hover_text("The plan changed after this MuJoCo run; the dashed curves show the old run.");
-                        }
-                        let tilt = run.tilt.iter().copied().filter(|v| v.is_finite()).fold(0.0, f64::max).to_degrees();
-                        let z_min = run.base_z.iter().copied().filter(|v| v.is_finite()).fold(f64::INFINITY, f64::min);
-                        let tilt_color = if tilt > 45.0 { egui::Color32::LIGHT_RED } else { ui.visuals().text_color() };
-                        ui.colored_label(tilt_color, format!("base: max tilt {tilt:.0}°{}", if z_min.is_finite() { format!(", min z {z_min:.3} m") } else { String::new() }))
-                            .on_hover_text("Root link orientation and height over the run; a tilt past ~45° usually means it fell.");
-                        if let Some(&(ji, err, t)) = run.tracking.first() {
-                            ui.label(format!("max tracking error: {} {:.1}° @ {t:.2}s", model.joints[ji].name, err.to_degrees()))
-                                .on_hover_text(
-                                    run.tracking
-                                        .iter()
-                                        .take(8)
-                                        .map(|&(j, e, t)| format!("{}: {:.2}° @ {t:.2}s", model.joints[j].name, e.to_degrees()))
-                                        .collect::<Vec<_>>()
-                                        .join("\n"),
-                                );
-                        }
-                        clicked = issue_list(ui, model, &run.issues, "Applied torques from MuJoCo, including contact.");
-                    }
-                    _ => {
+                match st.tab {
+                    ResultTab::Plan => {
                         clicked = issue_list(
                             ui,
                             model,
                             &analysis.issues,
+                            &|_| false,
                             "Torques are fixed-base inverse dynamics: exact for arms and legs in the air, not for legs carrying the body.",
                         );
+                    }
+                    ResultTab::Runs if n_runs == 0 => {
+                        ui.label("No runs yet: Run in MuJoCo, or load a CSV.");
+                    }
+                    ResultTab::Runs => {
+                        run_action = runs_table(ui, model, &st.runs, &seq_name, st.selected_run, &current_fp, &st.criteria);
+                        if let Some(run) = selected {
+                            ui.separator();
+                            ui.label(egui::RichText::new(format!("{} — {}", run.record.name, run.record.source)).small().weak());
+                            if run.plan_fp.as_ref().is_some_and(|fp| *fp != current_fp) {
+                                ui.colored_label(egui::Color32::YELLOW, "⟳ ran an older plan")
+                                    .on_hover_text("The plan has been edited since this run. Run again to compare, or ⟲ to restore that plan.");
+                            }
+                            let s = &run.summary;
+                            if let Some(tilt) = s.max_tilt.map(f64::to_degrees) {
+                                let color = if tilt > 45.0 { egui::Color32::LIGHT_RED } else { ui.visuals().text_color() };
+                                let z = s.min_base_z.map_or(String::new(), |z| format!(", min z {z:.3} m"));
+                                ui.colored_label(color, format!("base: max tilt {tilt:.0}°{z}"))
+                                    .on_hover_text("Root link orientation and height over the run; a tilt past ~45° usually means it fell.");
+                            }
+                            if let Some(&(ji, err, t)) = s.tracking.first() {
+                                ui.label(format!("max tracking error: {} {:.1}° @ {t:.2}s", model.joints[ji].name, err.to_degrees()))
+                                    .on_hover_text(
+                                        s.tracking
+                                            .iter()
+                                            .take(8)
+                                            .map(|&(j, e, t)| format!("{}: {:.2}° @ {t:.2}s", model.joints[j].name, e.to_degrees()))
+                                            .collect::<Vec<_>>()
+                                            .join("\n"),
+                                    );
+                            }
+                            clicked = issue_list(
+                                ui,
+                                model,
+                                &s.issues,
+                                &|i| s.after_end(i),
+                                "Checked on the recorded signals (MuJoCo: applied torques, contact included). Entries after the motion ends (settling, landing) are marked.",
+                            );
+                        }
                     }
                 }
                 if let Some(issue) = clicked {
@@ -843,6 +1268,37 @@ impl ArticaraApp {
                 }
             });
         });
+
+        match run_action {
+            Some(RunAction::Select(id)) => st.selected_run = Some(id),
+            Some(RunAction::Overlay(id, on)) => {
+                if let Some(r) = st.runs.iter_mut().find(|r| r.id == id) {
+                    r.overlay = on;
+                }
+            }
+            Some(RunAction::Save(id)) => {
+                let name = st.runs.iter().find(|r| r.id == id).map(|r| r.record.name.replace(' ', "_")).unwrap_or_default();
+                st.run_dialog_save = Some(id);
+                st.dlg_run.open(&format!("Save {name}.csv"), FileDialogMode::Save, None, &["csv"]);
+            }
+            Some(RunAction::Delete(id)) => {
+                st.runs.retain(|r| r.id != id);
+                if st.selected_run == Some(id) {
+                    st.selected_run = None;
+                }
+            }
+            Some(RunAction::Restore(id)) => {
+                if let Some(plan) = st.runs.iter().find(|r| r.id == id).and_then(|r| r.record.plan.clone()) {
+                    let (idx, start) = plan.restore(model);
+                    st.sequence = Some(idx);
+                    st.start_q = Some(start);
+                    st.selected_key = None;
+                    st.playing = false;
+                    edit = Some(format!("Restore plan of '{}'", plan.sequence.name));
+                }
+            }
+            None => {}
+        }
 
         // ── Playback / preview ──
         if st.playing {
@@ -870,26 +1326,132 @@ impl ArticaraApp {
         edit
     }
 
+    /// Export window: controller rate, holds, velocity / feedforward
+    /// columns, and the plan's open problems before anything is written.
+    fn motion_export_window(&mut self, ctx: &egui::Context, model: &articara::robot::RobotModel) {
+        let st = &mut self.motion;
+        if !st.export_open {
+            return;
+        }
+        let Some(seq_name) = st.sequence.and_then(|i| model.sequences.get(i)).map(|s| s.name.clone()) else {
+            st.export_open = false;
+            return;
+        };
+        let mut open = true;
+        egui::Window::new("📤 Export for hardware").open(&mut open).resizable(false).show(ctx, |ui| {
+            let e = &mut st.export;
+            egui::Grid::new("export_form").num_columns(2).show(ui, |ui| {
+                ui.label("rate");
+                ui.add(egui::DragValue::new(&mut e.rate_hz).range(1.0..=10000.0).speed(10.0).suffix(" Hz"))
+                    .on_hover_text("The controller's update rate: one row per control period");
+                ui.end_row();
+                ui.label("hold before / after");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut e.hold_before).range(0.0..=10.0).speed(0.05).suffix(" s"));
+                    ui.add(egui::DragValue::new(&mut e.hold_after).range(0.0..=10.0).speed(0.05).suffix(" s"));
+                })
+                .response
+                .on_hover_text("Hold the start pose before the motion and the end pose after it");
+                ui.end_row();
+                ui.label("columns");
+                ui.checkbox(&mut e.velocity, "target velocity (qd)");
+                ui.end_row();
+                ui.label("torque feedforward");
+                let runs: Vec<(usize, String)> = st
+                    .runs
+                    .iter()
+                    .filter(|r| r.record.sequence == seq_name && r.record.tau.is_some())
+                    .map(|r| (r.id, r.record.name.clone()))
+                    .collect();
+                if let FfChoice::Run(id) = st.export_ff {
+                    if !runs.iter().any(|(rid, _)| *rid == id) {
+                        st.export_ff = FfChoice::None;
+                    }
+                }
+                let label = match st.export_ff {
+                    FfChoice::None => "none (position only)".to_string(),
+                    FfChoice::Plan => "plan inverse dynamics".to_string(),
+                    FfChoice::Run(id) => format!("recorded: {}", runs.iter().find(|r| r.0 == id).map_or("?", |r| r.1.as_str())),
+                };
+                egui::ComboBox::from_id_salt("export_ff").selected_text(label).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut st.export_ff, FfChoice::None, "none (position only)");
+                    ui.selectable_value(&mut st.export_ff, FfChoice::Plan, "plan inverse dynamics")
+                        .on_hover_text("Fixed-base τ = M·q̈ + h: right for arms and legs in the air, not for legs carrying the body");
+                    for (id, name) in &runs {
+                        ui.selectable_value(&mut st.export_ff, FfChoice::Run(*id), format!("recorded: {name}"))
+                            .on_hover_text("Torques that run applied (MuJoCo on the ground: contacts included)");
+                    }
+                });
+                ui.end_row();
+            });
+
+            // What should give pause before this goes to a robot.
+            let plan_issues = st.analysis.as_ref().map_or(0, |a| a.issues.len());
+            if plan_issues > 0 {
+                ui.colored_label(egui::Color32::LIGHT_RED, format!("⚠ the plan has {plan_issues} limit issue(s) — see the Plan tab"));
+            }
+            if let FfChoice::Run(id) = st.export_ff {
+                if let Some(run) = st.runs.iter().find(|r| r.id == id) {
+                    let why = run.summary.verdict(&st.criteria);
+                    if !why.is_empty() {
+                        ui.colored_label(egui::Color32::LIGHT_RED, format!("⚠ {} fails: {}", run.record.name, why.join("; ")));
+                    }
+                    if run.plan_fp.as_deref().is_some_and(|fp| {
+                        st.sequence
+                            .and_then(|i| model.sequences.get(i))
+                            .is_some_and(|seq| fp != plan_fingerprint(&PlanSnapshot::capture(model, seq, st.start_q.as_deref().unwrap_or(&model.joint_positions))))
+                    }) {
+                        ui.colored_label(egui::Color32::YELLOW, format!("⟳ {} ran an older plan: its torques may not fit this one", run.record.name));
+                    }
+                }
+            }
+            if st.export_ff == FfChoice::Plan && st.run_base == RunBase::Ground {
+                ui.colored_label(egui::Color32::YELLOW, "Plan feedforward ignores ground contact; for a standing robot prefer a recorded MuJoCo run.");
+            }
+            let rows = ((st.export.hold_before + st.export.hold_after + st.analysis.as_ref().and_then(|a| a.trajectory.as_ref().ok()).map_or(0.0, |t| t.duration()))
+                * st.export.rate_hz)
+                .round() as usize
+                + 1;
+            if ui.button(format!("💾 Save CSV ({rows} rows)…")).clicked() {
+                st.dlg_save_csv.open("Export for hardware", FileDialogMode::Save, None, &["csv"]);
+            }
+        });
+        st.export_open &= open;
+    }
+
     fn motion_csv_dialog(&mut self, ctx: &egui::Context, model: &articara::robot::RobotModel) {
         if let FileDialogResult::Confirmed(path) = self.motion.dlg_save_csv.show(ctx) {
-            let result = match (self.motion.analysis.as_ref().map(|a| &a.trajectory), self.motion.start_q.as_ref()) {
-                (Some(Ok(traj)), Some(_)) => {
-                    let csv = motion::trajectory_csv(model, traj, self.motion.csv_rate_hz);
-                    let rows = csv.lines().count().saturating_sub(1);
+            let st = &self.motion;
+            let seq = st.sequence.and_then(|i| model.sequences.get(i));
+            let result = match (st.analysis.as_ref().map(|a| &a.trajectory), seq) {
+                (Some(Ok(traj)), Some(seq)) => {
+                    let ff = match st.export_ff {
+                        FfChoice::None => Feedforward::None,
+                        FfChoice::Plan => Feedforward::PlanInverseDynamics,
+                        FfChoice::Run(id) => st.runs.iter().find(|r| r.id == id).map_or(Feedforward::None, |r| Feedforward::Recorded(&r.record)),
+                    };
+                    let csv = articara::motion_export::hardware_csv(model, &seq.name, traj, &st.export, ff);
+                    let rows = csv.lines().filter(|l| !l.starts_with('#')).count().saturating_sub(1);
                     std::fs::write(&path, csv).map(|_| rows).map_err(|e| e.to_string())
                 }
                 _ => Err("no valid trajectory".to_string()),
             };
             self.status_message = match result {
-                Ok(rows) => format!("Saved trajectory ({rows} rows) → {}", path.display()),
-                Err(e) => format!("Trajectory CSV error: {e}"),
+                Ok(rows) => format!("Exported {rows} rows → {}", path.display()),
+                Err(e) => format!("Export error: {e}"),
             };
         }
     }
 }
 
 /// Issue list with a summary line; returns the issue the user clicked.
-fn issue_list<'a>(ui: &mut egui::Ui, model: &articara::robot::RobotModel, issues: &'a [Issue], note: &str) -> Option<&'a Issue> {
+fn issue_list<'a>(
+    ui: &mut egui::Ui,
+    model: &articara::robot::RobotModel,
+    issues: &'a [Issue],
+    after_end: &dyn Fn(&Issue) -> bool,
+    note: &str,
+) -> Option<&'a Issue> {
     if issues.is_empty() {
         ui.colored_label(egui::Color32::from_rgb(110, 210, 120), "✔ Within limits")
             .on_hover_text(format!("Joint range, declared velocity and declared effort are respected everywhere. {note}"));
@@ -908,14 +1470,159 @@ fn issue_list<'a>(ui: &mut egui::Ui, model: &articara::robot::RobotModel, issues
                 (IssueKind::Velocity, false) => ("m/s", 1.0),
                 (IssueKind::Position, false) => ("m", 1.0),
             };
+            let late = after_end(issue);
             let text = format!(
-                "{:.2}–{:.2}s {} {}: {:.1} (limit {:.1}) {unit}",
-                issue.t_start, issue.t_end, joint.name, issue.kind.label(), issue.peak * f, issue.limit * f
+                "{:.2}–{:.2}s {} {}: {:.1} (limit {:.1}) {unit}{}",
+                issue.t_start,
+                issue.t_end,
+                joint.name,
+                issue.kind.label(),
+                issue.peak * f,
+                issue.limit * f,
+                if late { " (after end)" } else { "" }
             );
-            if ui.add(egui::Label::new(egui::RichText::new(text).small().color(issue_color(issue.kind))).sense(egui::Sense::click())).clicked() {
+            let color = if late { issue_color(issue.kind).gamma_multiply(0.5) } else { issue_color(issue.kind) };
+            if ui.add(egui::Label::new(egui::RichText::new(text).small().color(color)).sense(egui::Sense::click())).clicked() {
                 clicked = Some(issue);
             }
         }
     });
     clicked
+}
+
+/// What the user did in the runs table (applied after the layout pass).
+enum RunAction {
+    Select(usize),
+    Overlay(usize, bool),
+    Save(usize),
+    Delete(usize),
+    Restore(usize),
+}
+
+/// Side-by-side numbers of the sequence's runs. Ratios are peak / declared
+/// limit (red above 1); "—" where the run didn't record that signal.
+fn runs_table(
+    ui: &mut egui::Ui,
+    model: &articara::robot::RobotModel,
+    runs: &[RunEntry],
+    sequence: &str,
+    selected: Option<usize>,
+    current_fp: &str,
+    criteria: &Criteria,
+) -> Option<RunAction> {
+    let mut action = None;
+    // Peak during the motion; ⚑ when something after it peaked higher.
+    let ratio = |ui: &mut egui::Ui, v: Option<(usize, f64)>, after: Option<(usize, f64)>| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            match v {
+                Some((ji, r)) => {
+                    // Exactly at the limit = clamped there: the motor saturated.
+                    let saturated = (r - 1.0).abs() < 1e-3;
+                    let (color, note) = if saturated {
+                        (egui::Color32::from_rgb(240, 160, 40), " — at the limit: motor saturated")
+                    } else if r > 1.0 {
+                        (egui::Color32::LIGHT_RED, "")
+                    } else {
+                        (ui.visuals().text_color(), "")
+                    };
+                    ui.colored_label(color, format!("{r:.2}")).on_hover_text(format!("{} (during the motion){note}", model.joints[ji].name));
+                }
+                None => {
+                    ui.weak("—");
+                }
+            }
+            if let Some((ji, ra)) = after.filter(|(_, ra)| *ra > v.map_or(0.0, |(_, r)| r) && *ra > 1.0) {
+                ui.colored_label(egui::Color32::from_rgb(200, 150, 90), "⚑")
+                    .on_hover_text(format!("After the motion ended (settling / landing): {} {ra:.2}", model.joints[ji].name));
+            }
+        });
+    };
+    egui::ScrollArea::vertical().id_salt("motion_runs").max_height(150.0).show(ui, |ui| {
+        egui::Grid::new("motion_runs_grid").striped(true).spacing([6.0, 2.0]).show(ui, |ui| {
+            for (h, tip) in [
+                ("", ""),
+                ("", "Pass / fail against the sweep criteria (tilt, tracking, limit issues during the motion)"),
+                ("run", ""),
+                ("issues", "During the motion (+ after it ended)"),
+                ("τ/max", "Peak |torque| ÷ declared effort during the motion"),
+                ("vel/max", "Peak |velocity| ÷ declared velocity during the motion"),
+                ("track°", "Largest |q − plan|"),
+                ("tilt°", "Largest base tilt"),
+                ("", ""),
+            ] {
+                let r = ui.label(egui::RichText::new(h).small().strong());
+                if !tip.is_empty() {
+                    r.on_hover_text(tip);
+                }
+            }
+            ui.end_row();
+            for run in runs.iter().filter(|r| r.record.sequence == sequence) {
+                let mut on = run.overlay;
+                if ui.checkbox(&mut on, "").on_hover_text("Overlay on the plot").changed() {
+                    action = Some(RunAction::Overlay(run.id, on));
+                }
+                let why = run.summary.verdict(criteria);
+                if why.is_empty() {
+                    ui.colored_label(egui::Color32::from_rgb(110, 210, 120), "✔").on_hover_text("Passes");
+                } else {
+                    ui.colored_label(egui::Color32::LIGHT_RED, "✖").on_hover_text(why.join("\n"));
+                }
+                let stale = run.plan_fp.as_deref().is_some_and(|fp| fp != current_fp);
+                let label = format!("{}{}", run.record.name, if stale { " ⟳" } else { "" });
+                if ui
+                    .selectable_label(selected == Some(run.id), label)
+                    .on_hover_text(format!("{}{}", run.record.source, if stale { "\n⟳ ran an older plan" } else { "" }))
+                    .clicked()
+                {
+                    action = Some(RunAction::Select(run.id));
+                }
+                let n = run.summary.issues_during();
+                let late = run.summary.issues.len() - n;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    if n > 0 {
+                        ui.colored_label(egui::Color32::LIGHT_RED, n.to_string());
+                    } else {
+                        ui.colored_label(egui::Color32::from_rgb(110, 210, 120), "0");
+                    }
+                    if late > 0 {
+                        ui.weak(format!("+{late}")).on_hover_text(format!("{late} more after the motion ended (settling / landing)"));
+                    }
+                });
+                ratio(ui, run.summary.worst_torque, run.summary.worst_torque_after);
+                ratio(ui, run.summary.worst_velocity, run.summary.worst_velocity_after);
+                match run.summary.tracking.first() {
+                    Some(&(ji, e, _)) => {
+                        ui.label(format!("{:.1}", e.to_degrees())).on_hover_text(&model.joints[ji].name);
+                    }
+                    None => {
+                        ui.weak("—");
+                    }
+                }
+                match run.summary.max_tilt {
+                    Some(t) => {
+                        let color = if t.to_degrees() > 45.0 { egui::Color32::LIGHT_RED } else { ui.visuals().text_color() };
+                        ui.colored_label(color, format!("{:.0}", t.to_degrees()));
+                    }
+                    None => {
+                        ui.weak("—");
+                    }
+                }
+                ui.horizontal(|ui| {
+                    if run.record.plan.is_some() && ui.small_button("⟲").on_hover_text("Restore the plan this run executed (undoable)").clicked() {
+                        action = Some(RunAction::Restore(run.id));
+                    }
+                    if ui.small_button("💾").on_hover_text("Save as CSV").clicked() {
+                        action = Some(RunAction::Save(run.id));
+                    }
+                    if ui.small_button("🗑").on_hover_text("Forget this run").clicked() {
+                        action = Some(RunAction::Delete(run.id));
+                    }
+                });
+                ui.end_row();
+            }
+        });
+    });
+    action
 }

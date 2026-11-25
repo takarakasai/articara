@@ -1854,6 +1854,86 @@ RR_hip_joint = 0.0
 RR_thigh_joint = 1.2999999999999998
 arm_pitch_joint = 0.0000000000000004440892098500626
 
+[[pose]]
+name = "jump_hw_crouch"
+duration = 1.0
+kind = "QuinticSmooth"
+
+[pose.angles]
+FL_calf_joint = -1.8199999999999998
+FL_hip_joint = 0.0
+FL_thigh_joint = 0.9099999999999999
+FR_calf_joint = -1.8199999999999998
+FR_hip_joint = 0.0
+FR_thigh_joint = 0.9099999999999999
+RL_calf_joint = -1.8199999999999998
+RL_hip_joint = 0.0
+RL_thigh_joint = 0.9099999999999999
+RR_calf_joint = -1.8199999999999998
+RR_hip_joint = 0.0
+RR_thigh_joint = 0.9099999999999999
+arm_pitch_joint = 0.0
+
+[[pose]]
+name = "jump_hw_extend"
+duration = 1.0
+kind = "QuinticSmooth"
+
+[pose.angles]
+FL_calf_joint = -0.5980000000000001
+FL_hip_joint = 0.0
+FL_thigh_joint = 0.29900000000000004
+FR_calf_joint = -0.5980000000000001
+FR_hip_joint = 0.0
+FR_thigh_joint = 0.29900000000000004
+RL_calf_joint = -0.5980000000000001
+RL_hip_joint = 0.0
+RL_thigh_joint = 0.29900000000000004
+RR_calf_joint = -0.5980000000000001
+RR_hip_joint = 0.0
+RR_thigh_joint = 0.29900000000000004
+arm_pitch_joint = 0.0
+
+[[pose]]
+name = "jump_hw_tuck"
+duration = 1.0
+kind = "QuinticSmooth"
+
+[pose.angles]
+FL_calf_joint = -1.3
+FL_hip_joint = 0.0
+FL_thigh_joint = 0.65
+FR_calf_joint = -1.3
+FR_hip_joint = 0.0
+FR_thigh_joint = 0.65
+RL_calf_joint = -1.3
+RL_hip_joint = 0.0
+RL_thigh_joint = 0.65
+RR_calf_joint = -1.3
+RR_hip_joint = 0.0
+RR_thigh_joint = 0.65
+arm_pitch_joint = 0.0
+
+[[pose]]
+name = "jump_hw_land"
+duration = 1.0
+kind = "QuinticSmooth"
+
+[pose.angles]
+FL_calf_joint = -1.0
+FL_hip_joint = 0.0
+FL_thigh_joint = 0.5
+FR_calf_joint = -1.0
+FR_hip_joint = 0.0
+FR_thigh_joint = 0.5
+RL_calf_joint = -1.0
+RL_hip_joint = 0.0
+RL_thigh_joint = 0.5
+RR_calf_joint = -1.0
+RR_hip_joint = 0.0
+RR_thigh_joint = 0.5
+arm_pitch_joint = 0.0
+
 [[sequence]]
 name = "jump"
 
@@ -1870,6 +1950,29 @@ kind = "QuinticSmooth"
 [[sequence.steps]]
 pose_name = "constrain_2"
 duration = 0.1
+kind = "QuinticSmooth"
+
+[[sequence]]
+name = "jump_hw"
+
+[[sequence.steps]]
+pose_name = "jump_hw_crouch"
+duration = 0.6
+kind = "QuinticSmooth"
+
+[[sequence.steps]]
+pose_name = "jump_hw_extend"
+duration = 0.2
+kind = "CubicSmooth"
+
+[[sequence.steps]]
+pose_name = "jump_hw_tuck"
+duration = 0.05
+kind = "QuinticSmooth"
+
+[[sequence.steps]]
+pose_name = "jump_hw_land"
+duration = 0.4
 kind = "QuinticSmooth"
 
 [home]
