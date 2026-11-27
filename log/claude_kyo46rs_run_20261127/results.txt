@@ -1,0 +1,23 @@
+# kyo46rs の走りの下見（tu88、歩幅 0.043、kr.sh）。生存 / 本数、mean_steps = 倒れるまでの歩数の平均
+## 1. そのまま（T_SS 0.20、T_FLIGHT 0.04）: 0/4、3 歩、ヨー −4.3 rad/s で回る、縦の力 239 N（体重 3.5 倍）
+## 2. 空中なしで両脚支持を縮める（T_FLIGHT 0、種 1〜8）
+T_SS\T_DS   0.10  0.05  0.02  0
+0.30        8     8     8     0   (T_DS=0 かつ T_FLIGHT=0 は長さ 0 の両脚支持が着地を隠す、比べる意味なし)
+0.25        8     8     5     0
+0.20        1     2     1     0   (刻み 0.20 s は kyo の遊脚が追いつかない)
+## 3. 空中あり（階層型 QP のまま、種 1〜8）: T_SS 0.30／0.40／0.45 × T_FLIGHT 0.01／0.02／0.04 の 9 組すべて 0/8、1.4〜2.3 歩
+## 4. 走りのキーを 1 つずつ外す（T_SS 0.30、F 0.02、種 1〜4）: RUN_Z_LEVEL、RUN_SWING_RISE/FALL、RUN_EVENT_TD、RUN_LAND_RAMP、RUN_FOOT_K/XI_G、PUSH_REPLAN/CP_RUN_CROSS_HOLD、SENSE_PRED_TICKS、WRENCH_MPC_APPLY、COP_LEASH、VX=0.03、T_DS 0.02 → すべて 0/4、1.5〜3 歩
+## 5. 接触の判定（CONTACT_ON_BW 0.10、CONTACT_ADMIT_SCHEDULED 0、G1 の CONTACT_ADMIT_*）: 0/4、離地の時刻 2.175 s で同一
+## 6. 根 1: 最初の立ちの −g の始まりで、階層型 QP が遊脚のタスクを落とす（降格）。遊脚は腰と同じ速さでしか縮まず、QP が力を割り当てない足に 27 N が載ったまま 0.17 s 離れない
+##    WBC_STRATEGY=weighted WBCW_COM=100 WBCW_POSTURE=0.001 WBC_WEIGHTED_OFF_STAIRS=0（G1 の値）で離地 2.175 → 2.075 s、最初の立ちは通る。ただし 0/8、3 歩
+## 7. 根 2: COM_PREPLAN=1（kyo の v4）が立ちを 0.30 → 0.73 s に延ばし、半正弦の鉛直の計画の沈みが 17 cm に膨らむ
+W="WBC_STRATEGY=weighted WBCW_COM=100 WBCW_POSTURE=0.001 WBC_WEIGHTED_OFF_STAIRS=0 COM_PREPLAN=0"
+$W T_SS=0.30 F 0.02   0/8  5.6 歩
+$W T_SS=0.30 F 0.04   1/8  7.4 歩
+$W T_SS=0.25 F 0.02   0/8  9.0 歩
+$W T_SS=0.25 F 0.03   0/8  6.3 歩
+階層型＋COM_PREPLAN=0 T_SS=0.30 F 0.02   0/8  2 歩
+$W T_SS=0.30 T_DS=0.02 F 0（速い歩行）   8/8  25 歩
+## 8. 残る崩れ: 3〜7 歩目の横の発散（横の速さ +0.76 m/s、支持足の CoP は内側の端に張り付く）。後ろ足が次の立ちのはじめに 6〜14 N で床を引きずる
+横のゲイン（$W T_SS 0.30 F 0.04 RUN_FOOT_MAX 0.06、種 1〜8）: RUN_FOOT_K 0.2／0.5／1.0 × RUN_FOOT_XI_GY 0／1.0 → 1/8 7.4 歩、0/8 6.8、他 0/8 4 歩（上げるほど悪い）
+後ろ足の上げ（$W F 0.04）: T_SS 0.30／0.25 × RUN_SWING_RISE 0.05／0.10 × LIFT_H 0.03／0.045 → 0〜1/8、5〜7.4 歩
