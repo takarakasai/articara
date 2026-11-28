@@ -6,6 +6,7 @@ G1 の走りの基準 WR10（`doc/from_claude/20261125_g1_running_summary.md`）
 
 - **そのままでは 1 本も走らない。** 倒れる場所を 2 つ直して、2 歩で倒れていたものが 5〜9 歩まで走るようになった（T_FLIGHT 0.04 で 1／8 が完走）。
 - **残る壁（11-27）:** 3〜7 歩目の横の発散。→ 11-28 に根を特定（横の Raibert 項 RUN_FOOT_K が普段の揺れで足を外へ出す）。RUN_FOOT_K=0 で 96／96、空中 50 ms（候補 KR01、末尾の「続き」）。
+- **基準 KR03（11-28 にユーザ確定）:** `kr03.sh` = KR01 ＋ RUN_FOOT_XI_GY=1.0 ＋ PUSH_REPLAN=0.03、21 条件の電池で 875／876 of 1008（`log/claude_kyo46rs_run_20261127/BASELINE_RUN_KR03.md`、末尾の「続き 2」）。
 - **kyo46rs の走りに要るもの:**
   - 重み付きの QP（`WBC_STRATEGY=weighted`）。
   - `COM_PREPLAN=0`。
