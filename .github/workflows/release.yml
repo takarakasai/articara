@@ -4,6 +4,9 @@ name: Release
 # Silicon and Intel), in two variants each — `lite` (no MuJoCo) and
 # `mujoco` (MuJoCo runtime bundled) — smoke-tests every package, and
 # publishes them with SHA256SUMS as a GitHub Release.
+# The tag may also come from a Release drafted and published on GitHub's
+# web page (Releases → Draft a new release → new tag): the packages are
+# then attached to that Release instead of creating one.
 # "Run workflow" (workflow_dispatch) does the same without publishing:
 # the packages are kept as workflow artifacts for a trial run.
 #
@@ -89,7 +92,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "articara $GITHUB_REF_NAME" \
-            --generate-notes
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Created on the web page together with the tag: add the files.
+            gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "articara $GITHUB_REF_NAME" \
+              --generate-notes
+          fi
