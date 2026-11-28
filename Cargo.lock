@@ -3204,7 +3204,7 @@ dependencies = [
 [[package]]
 name = "misa-biped"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misa-locomotion.git?rev=dbfe1587fdcdafd0942ae1b5209e458755a88b98#dbfe1587fdcdafd0942ae1b5209e458755a88b98"
+source = "git+https://github.com/takarakasai/misa-locomotion.git?rev=a270d7b11cb16f5ce443f298f85f88753bfb9b60#a270d7b11cb16f5ce443f298f85f88753bfb9b60"
 dependencies = [
  "misa-mpc",
  "misa-wbc",
@@ -3215,7 +3215,7 @@ dependencies = [
 [[package]]
 name = "misa-mpc"
 version = "0.1.0"
-source = "git+https://github.com/takarakasai/misa-locomotion.git?rev=dbfe1587fdcdafd0942ae1b5209e458755a88b98#dbfe1587fdcdafd0942ae1b5209e458755a88b98"
+source = "git+https://github.com/takarakasai/misa-locomotion.git?rev=a270d7b11cb16f5ce443f298f85f88753bfb9b60#a270d7b11cb16f5ce443f298f85f88753bfb9b60"
 dependencies = [
  "misa-wbc",
  "nalgebra",

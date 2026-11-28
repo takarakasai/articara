@@ -152,8 +152,8 @@ misa-wbc = { git = "https://github.com/takarakasai/misa-wbc.git" }
 # Biped walker and the wrench MPC: lifted out of `src/biped` (2026-10-29),
 # their own repository since 2026-10-31. Pinned by `rev` so every checkout
 # builds the same walker whatever its Cargo.lock says; bump both revs together.
-misa-mpc = { git = "https://github.com/takarakasai/misa-locomotion.git", rev = "dbfe1587fdcdafd0942ae1b5209e458755a88b98" }
-misa-biped = { git = "https://github.com/takarakasai/misa-locomotion.git", rev = "dbfe1587fdcdafd0942ae1b5209e458755a88b98" }
+misa-mpc = { git = "https://github.com/takarakasai/misa-locomotion.git", rev = "a270d7b11cb16f5ce443f298f85f88753bfb9b60" }
+misa-biped = { git = "https://github.com/takarakasai/misa-locomotion.git", rev = "a270d7b11cb16f5ce443f298f85f88753bfb9b60" }
 quadruped-gait = { git = "https://github.com/takarakasai/quadruped-gait.git" }
 # Sim-deploy for the Go2 RL policy (`go2_policy_sim` example): the same
 # deploy-side ONNX runtime the hardware runner uses. Optional so the GUI

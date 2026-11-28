@@ -9,6 +9,7 @@ G1 の走りの基準 WR10（`doc/from_claude/20261125_g1_running_summary.md`）
 - **基準 KR03（11-28 にユーザ確定）:** `kr03.sh` = KR01 ＋ RUN_FOOT_XI_GY=1.0 ＋ PUSH_REPLAN=0.03、21 条件の電池で 875／876 of 1008（`log/claude_kyo46rs_run_20261127/BASELINE_RUN_KR03.md`、末尾の「続き 2」）。
 - **基準 KR04（11-28 にユーザ確定）:** KR03 ＋ G1 と同じ胴の速度の融合（`kr04.sh`）、雑音 24 → 48、電池 900／893（`BASELINE_RUN_KR04.md`、末尾の「続き 3」）。
 - **基準 KR06（11-28 にユーザ確定）:** KR04 ＋ `COP_LEASH=0`（`kr06.sh`）、凹凸の転倒を解消、電池 1008／1008（`BASELINE_RUN_KR06.md`、「続き 4」）。残りは荷物と凹凸の足踏み（出た速さ 20 %、7〜68 %）。
+- **基準 KR07（11-28 にユーザ確定）:** KR06 ＋ `COM_BIAS_X=0.006`（`kr07.sh`、misa-locomotion a270d7b）、電池 1008／1008 のまま荷物 20 → 97 %、凹凸 5 mm 58 → 88 %（`BASELINE_RUN_KR07.md`、「続き 5」）。根は後ろ向きだけの再計画で、+6 mm はその場しのぎに近い。
 - **kyo46rs の走りに要るもの:**
   - 重み付きの QP（`WBC_STRATEGY=weighted`）。
   - `COM_PREPLAN=0`。
